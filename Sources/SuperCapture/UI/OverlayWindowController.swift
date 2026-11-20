@@ -72,6 +72,7 @@ public final class OverlayWindowController {
     public func present() {
         guard captureTask == nil, !isPresented else { return }
         guard CGPreflightScreenCaptureAccess() else {
+            Diagnostics.log("overlay: no screen recording permission — requesting")
             CGRequestScreenCaptureAccess()
             onError?(CaptureError.permissionRequired)
             return

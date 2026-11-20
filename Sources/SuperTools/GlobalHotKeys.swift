@@ -1,4 +1,5 @@
 import AppKit
+import SuperCapture
 import Carbon
 
 @MainActor
@@ -15,6 +16,7 @@ final class GlobalHotKeys {
     var history: (() -> Void)?
 
     func start(capture: NativeShortcut = .capture, history: NativeShortcut = .history) throws {
+        Diagnostics.log("hotkeys: start capture=\(capture.displayString) history=\(history.displayString)")
         try configure(capture: capture, history: history) {}
     }
 
@@ -46,6 +48,7 @@ final class GlobalHotKeys {
         registrations = configured
         captureID = registrations[capture]?.id
         historyID = registrations[history]?.id
+        Diagnostics.log("hotkeys: configured captureID=\(captureID.map(String.init) ?? "nil") historyID=\(historyID.map(String.init) ?? "nil")")
     }
 
     private func installHandler() throws {
@@ -61,11 +64,13 @@ final class GlobalHotKeys {
             // Carbon dispatches application hotkeys on the application event loop.
             let keys = Unmanaged<GlobalHotKeys>.fromOpaque(userData).takeUnretainedValue()
             MainActor.assumeIsolated {
+                Diagnostics.log("hotkeys: fired id=\(identifier.id)")
                 if identifier.id == keys.captureID { keys.capture?() }
                 else if identifier.id == keys.historyID { keys.history?() }
             }
             return noErr
         }, 1, &eventType, context, &handler)
+        Diagnostics.log("hotkeys: InstallEventHandler status=\(status)")
         guard status == noErr else { throw HotKeyError.registration(status) }
     }
 
@@ -74,6 +79,7 @@ final class GlobalHotKeys {
         let identifier = EventHotKeyID(signature: 0x53544F4C, id: id)
         let status = RegisterEventHotKey(UInt32(shortcut.keyCode), UInt32(shortcut.modifiers), identifier,
                                          GetApplicationEventTarget(), 0, &reference)
+        Diagnostics.log("hotkeys: register \(shortcut.displayString) id=\(id) status=\(status)")
         guard status == noErr, let reference else { throw HotKeyError.registration(status) }
         return Registration(id: id, reference: reference)
     }

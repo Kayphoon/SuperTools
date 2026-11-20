@@ -6,6 +6,10 @@ import SuperClipboard
 @MainActor
 enum SuperToolsApp {
     static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            SelfTest.run()
+            return
+        }
         let app = NSApplication.shared
         let delegate = CaptureAppDelegate()
         app.delegate = delegate
@@ -37,6 +41,17 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private var resetClear: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Diagnostics.log("launch: pid \(ProcessInfo.processInfo.processIdentifier) bundle=\(Bundle.main.bundleIdentifier ?? "nil")")
+        Diagnostics.log("launch: screens=\(NSScreen.screens.count) screenAccess=\(CGPreflightScreenCaptureAccess())")
+        Diagnostics.log("launch: args=[\(CommandLine.arguments.dropFirst().joined(separator: " "))]")
+        if let id = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+                .map(\.processIdentifier)
+                .filter { $0 != ProcessInfo.processInfo.processIdentifier }
+            if !others.isEmpty {
+                Diagnostics.log("launch: WARNING another instance running pid=\(others) — global hotkeys will collide")
+            }
+        }
         do {
             let settingsStore = try SettingsStore()
             self.settingsStore = settingsStore
@@ -210,6 +225,8 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(clear)
         clearItem = clear
         menu.addItem(.separator())
+        menu.addItem(action("打开屏幕录制权限设置…", #selector(openScreenRecordingSettings)))
+        menu.addItem(.separator())
         let preferences = action("偏好设置…", #selector(showSettings))
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
@@ -233,8 +250,14 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         item.target = self
         return item
     }
+    @objc private func openScreenRecordingSettings() {
+        Diagnostics.log("openScreenRecordingSettings: preflight=\(CGPreflightScreenCaptureAccess())")
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+        NSWorkspace.shared.open(url)
+    }
 
     @objc private func capture() {
+        Diagnostics.log("menu: capture")
         guard ocrTask == nil else {
             announce("正在识别文字，请稍后再截图。")
             return
@@ -242,7 +265,28 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         notice.close()
         history?.window?.orderOut(nil)
         settingsPanel?.window?.orderOut(nil)
+        guard ensureScreenRecordingPermission() else { return }
         overlay?.present()
+    }
+
+    /// Warm the capture path before the hotkey path.
+    ///
+    /// Screen recording is a modal TCC prompt the first time, and it is granted to
+    /// the calling bundle while the app is frontmost. Requesting it lazily inside a
+    /// hotkey callback (a background app) can leave the prompt unanswerable, so the
+    /// menu item asks for it explicitly and points at System Settings on refusal.
+    private func ensureScreenRecordingPermission() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        Diagnostics.log("permission: requesting screen recording access")
+        NSApp.activate(ignoringOtherApps: true)
+        if CGRequestScreenCaptureAccess() {
+            Diagnostics.log("permission: granted")
+            return true
+        }
+        Diagnostics.log("permission: denied")
+        announce("需要屏幕录制权限。请在系统设置 → 隐私与安全性 → 屏幕与系统录音中允许 SuperTools，然后重试。")
+        openScreenRecordingSettings()
+        return false
     }
 
     @objc private func showHistory() {
@@ -326,12 +370,16 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
                              userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
+    /// Report an error without a blocking modal alert.
+    ///
+    /// A modal `NSAlert` runs a nested run loop, which deadlocks a menu bar app
+    /// that has no key window: the alert can be drawn behind everything, the run
+    /// loop never returns, and every later hotkey looks like it "did nothing".
+    /// The HUD plus the runtime log keep the app responsive while still surfacing
+    /// the failure.
     private func show(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "SuperTools"
-        alert.informativeText = error.localizedDescription
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        Diagnostics.log("error: \(error.localizedDescription)")
+        announce(error.localizedDescription)
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
