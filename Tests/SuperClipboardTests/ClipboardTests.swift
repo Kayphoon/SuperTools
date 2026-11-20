@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+@testable import SuperCapture
 @testable import SuperClipboard
 @testable import SuperTools
 
@@ -227,5 +228,30 @@ struct ClipboardTests {
         try store.save(custom)
         #expect(FileManager.default.fileExists(atPath: fileURL.path))
         #expect(try store.load() == custom)
+    }
+
+    @Test func testLiquidGlassPanelsAndControlsEmbedNativeGlassEffects() async throws {
+        try await MainActor.run {
+            let directory = temporaryDirectory()
+            defer { cleanup(directory) }
+            let store = try ClipboardStore(directory: directory)
+            store.recordText("Liquid Glass Row")
+            let historyPanel = HistoryPanel(store: store)
+            historyPanel.reload()
+            let settingsPanel = SettingsPanel(settings: NativeSettings())
+            #expect(historyPanel.window?.contentView is GlassSurfaceView)
+            #expect(settingsPanel.window?.contentView is GlassSurfaceView)
+            #expect(historyPanel.window?.isOpaque == false)
+            #expect(settingsPanel.window?.isOpaque == false)
+            let button = NSButton(title: "测试", target: nil, action: nil)
+            button.applyLiquidGlassStyle(active: true)
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                #expect(button.bezelStyle == .glass)
+                let glassRoot = try #require(historyPanel.window?.contentView as? GlassSurfaceView)
+                #expect(glassRoot.subviews.first is NSGlassEffectView)
+            }
+            #endif
+        }
     }
 }

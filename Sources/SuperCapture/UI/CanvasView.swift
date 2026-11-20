@@ -5,7 +5,23 @@ final class CanvasView: NSView {
     weak var coordinator: OverlayWindowController?
     var displayFrame = CGRect.zero
     var image: CGImage?
+
+    private let toolbarSurface = GlassSurfaceView(
+        variant: .regular,
+        cornerRadius: 16,
+        isInteractive: true,
+        withinWindowBlending: true
+    )
+    private let toolbarGroup = GlassGroupView(spacing: 6)
     private let toolbar = NSStackView()
+    private var toolButtons: [OverlayWindowController.Tool: NSButton] = [:]
+
+    private let instructionSurface = GlassSurfaceView(
+        variant: .clear,
+        cornerRadius: 15,
+        isInteractive: false,
+        withinWindowBlending: true
+    )
     private let instruction = NSTextField(labelWithString: "拖动框选 · Esc 取消")
 
     override var acceptsFirstResponder: Bool { true }
@@ -14,37 +30,65 @@ final class CanvasView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+
         toolbar.orientation = .horizontal
         toolbar.spacing = 6
-        toolbar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
-        toolbar.wantsLayer = true
-        toolbar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        toolbar.layer?.cornerRadius = 8
-        let actions: [(String, String, Selector)] = [
-            ("选区", "V · 移动选区，拖动八个锚点调整", #selector(selectTool)),
-            ("矩形", "R · 矩形标注", #selector(rectangleTool)),
-            ("马赛克", "M · 马赛克", #selector(mosaicTool)),
-            ("颜色", "1 红 / 2 黄 / 3 蓝", #selector(cycleColor)),
-            ("线宽", "[ / ] · 2 / 4 / 6 pt", #selector(cycleWidth)),
-            ("撤销", "⌘Z", #selector(undoAnnotation)),
-            ("文字", "⇧Enter 或 ⌘C · 只复制文字", #selector(copyText)),
-            ("复制", "Enter 或双击 · 复制图片", #selector(copyImage)),
-            ("取消", "Esc", #selector(cancel))
+        toolbar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+
+        let actions: [(String, String, Selector, OverlayWindowController.Tool?)] = [
+            ("选区", "V · 移动选区，拖动八个锚点调整", #selector(selectTool), .selection),
+            ("矩形", "R · 矩形标注", #selector(rectangleTool), .rectangle),
+            ("马赛克", "M · 马赛克", #selector(mosaicTool), .mosaic),
+            ("颜色", "1 红 / 2 黄 / 3 蓝", #selector(cycleColor), nil),
+            ("线宽", "[ / ] · 2 / 4 / 6 pt", #selector(cycleWidth), nil),
+            ("撤销", "⌘Z", #selector(undoAnnotation), nil),
+            ("文字", "⇧Enter 或 ⌘C · 只复制文字", #selector(copyText), nil),
+            ("复制", "Enter 或双击 · 复制图片", #selector(copyImage), nil),
+            ("取消", "Esc", #selector(cancel), nil)
         ]
-        for (title, tooltip, action) in actions {
+
+        for (title, tooltip, action, toolKind) in actions {
             let button = NSButton(title: title, target: self, action: action)
-            button.bezelStyle = .rounded
+            button.applyLiquidGlassStyle(active: toolKind == .selection)
             button.toolTip = tooltip
             button.setAccessibilityLabel(tooltip)
             button.setContentHuggingPriority(.required, for: .horizontal)
+            if let toolKind {
+                toolButtons[toolKind] = button
+            }
             toolbar.addArrangedSubview(button)
         }
-        addSubview(toolbar)
-        toolbar.isHidden = true
-        instruction.font = .systemFont(ofSize: 14, weight: .medium)
-        instruction.textColor = .white
+
+        toolbarGroup.translatesAutoresizingMaskIntoConstraints = false
+        toolbarGroup.contentContainer.addSubview(toolbar)
+        toolbarSurface.contentContainer.addSubview(toolbarGroup)
+        NSLayoutConstraint.activate([
+            toolbar.topAnchor.constraint(equalTo: toolbarGroup.contentContainer.topAnchor),
+            toolbar.leadingAnchor.constraint(equalTo: toolbarGroup.contentContainer.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: toolbarGroup.contentContainer.trailingAnchor),
+            toolbar.bottomAnchor.constraint(equalTo: toolbarGroup.contentContainer.bottomAnchor),
+            toolbarGroup.topAnchor.constraint(equalTo: toolbarSurface.contentContainer.topAnchor),
+            toolbarGroup.leadingAnchor.constraint(equalTo: toolbarSurface.contentContainer.leadingAnchor),
+            toolbarGroup.trailingAnchor.constraint(equalTo: toolbarSurface.contentContainer.trailingAnchor),
+            toolbarGroup.bottomAnchor.constraint(equalTo: toolbarSurface.contentContainer.bottomAnchor)
+        ])
+        addSubview(toolbarSurface)
+        toolbarSurface.isHidden = true
+
+        instruction.font = .systemFont(ofSize: 13, weight: .medium)
+        instruction.textColor = .labelColor
         instruction.alignment = .center
-        addSubview(instruction)
+        instruction.translatesAutoresizingMaskIntoConstraints = false
+        instructionSurface.contentContainer.addSubview(instruction)
+        NSLayoutConstraint.activate([
+            instruction.topAnchor.constraint(equalTo: instructionSurface.contentContainer.topAnchor, constant: 6),
+            instruction.leadingAnchor.constraint(equalTo: instructionSurface.contentContainer.leadingAnchor, constant: 14),
+            instruction.trailingAnchor.constraint(equalTo: instructionSurface.contentContainer.trailingAnchor, constant: -14),
+            instruction.bottomAnchor.constraint(equalTo: instructionSurface.contentContainer.bottomAnchor, constant: -6)
+        ])
+        addSubview(instructionSurface)
+
         setAccessibilityLabel("截图选区。拖动框选，箭头键微调，R 矩形，M 马赛克，Enter 复制，Shift Enter 识别文字，Escape 取消。")
     }
 
@@ -55,17 +99,45 @@ final class CanvasView: NSView {
     func refresh() {
         needsDisplay = true
         guard let coordinator else { return }
+        for (kind, button) in toolButtons {
+            button.applyLiquidGlassStyle(active: coordinator.tool == kind)
+        }
+
         let selection = local(coordinator.selection)
-        toolbar.isHidden = selection.isNull || !bounds.contains(selection.center) || coordinator.isDragging
-        toolbar.layoutSubtreeIfNeeded()
-        let size = toolbar.fittingSize
-        toolbar.frame = CGRect(
-            x: min(max(selection.midX - size.width / 2, 8), max(8, bounds.width - size.width - 8)),
-            y: max(8, min(selection.minY - size.height - 12, bounds.height - size.height - 8)),
-            width: size.width, height: size.height
-        )
+        let shouldHideToolbar = selection.isNull || !bounds.contains(selection.center) || coordinator.isDragging
+        let wasHidden = toolbarSurface.isHidden
+        toolbarSurface.isHidden = shouldHideToolbar
+        if !shouldHideToolbar {
+            toolbarSurface.layoutSubtreeIfNeeded()
+            let size = toolbarSurface.fittingSize
+            toolbarSurface.frame = CGRect(
+                x: min(max(selection.midX - size.width / 2, 8), max(8, bounds.width - size.width - 8)),
+                y: max(8, min(selection.minY - size.height - 12, bounds.height - size.height - 8)),
+                width: size.width,
+                height: size.height
+            )
+            if wasHidden && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                toolbarSurface.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.14
+                    toolbarSurface.animator().alphaValue = 1
+                }
+            } else {
+                toolbarSurface.alphaValue = 1
+            }
+        }
+
         instruction.stringValue = coordinator.statusText
-        instruction.frame = CGRect(x: 8, y: bounds.height - 44, width: max(0, bounds.width - 16), height: 24)
+        instructionSurface.layoutSubtreeIfNeeded()
+        let pillSize = instructionSurface.fittingSize
+        let pillWidth = min(max(pillSize.width, 160), max(160, bounds.width - 24))
+        let pillHeight = max(pillSize.height, 30)
+        instructionSurface.frame = CGRect(
+            x: (bounds.width - pillWidth) / 2,
+            y: bounds.height - pillHeight - 20,
+            width: pillWidth,
+            height: pillHeight
+        )
     }
 
     override func draw(_ dirtyRect: NSRect) {

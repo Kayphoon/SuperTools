@@ -1,4 +1,5 @@
 import AppKit
+import SuperCapture
 
 @MainActor
 final class SettingsPanel: NSWindowController, NSWindowDelegate {
@@ -11,6 +12,10 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private var recordingTarget: RecordingTarget?
     private var keyMonitor: Any?
 
+    private let rootGlass = GlassSurfaceView(variant: .regular, cornerRadius: 16, isInteractive: true)
+    private let controlsGroup = GlassGroupView(spacing: 10)
+    private let captureBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
+    private let historyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
     private let captureValueLabel = NSTextField(labelWithString: "")
     private let historyValueLabel = NSTextField(labelWithString: "")
     private let recordCaptureButton = NSButton(title: "录制快捷键", target: nil, action: nil)
@@ -28,8 +33,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
         let panel = NSPanel(
-            contentRect: CGRect(x: 0, y: 0, width: 460, height: 220),
-            styleMask: [.titled, .closable, .nonactivatingPanel],
+            contentRect: CGRect(x: 0, y: 0, width: 480, height: 248),
+            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -37,6 +42,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.level = .floating
+        panel.configureLiquidGlassWindow()
         super.init(window: panel)
         panel.delegate = self
         setupViews(in: panel)
@@ -46,38 +52,60 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { nil }
 
     private func setupViews(in panel: NSPanel) {
-        let content = NSView()
-        panel.contentView = content
+        panel.contentView = rootGlass
+        let content = rootGlass.contentContainer
 
         let captureTitleLabel = NSTextField(labelWithString: "截图快捷键")
         captureTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         captureValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        captureValueLabel.alignment = .right
+        captureValueLabel.alignment = .center
+        captureValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        captureBadge.contentContainer.addSubview(captureValueLabel)
+        NSLayoutConstraint.activate([
+            captureValueLabel.topAnchor.constraint(equalTo: captureBadge.contentContainer.topAnchor, constant: 4),
+            captureValueLabel.leadingAnchor.constraint(equalTo: captureBadge.contentContainer.leadingAnchor, constant: 10),
+            captureValueLabel.trailingAnchor.constraint(equalTo: captureBadge.contentContainer.trailingAnchor, constant: -10),
+            captureValueLabel.bottomAnchor.constraint(equalTo: captureBadge.contentContainer.bottomAnchor, constant: -4),
+            captureBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
+        ])
+
         recordCaptureButton.target = self
         recordCaptureButton.action = #selector(recordCaptureShortcut)
-        recordCaptureButton.bezelStyle = .rounded
+        recordCaptureButton.applyLiquidGlassStyle()
 
-        let captureRow = NSStackView(views: [captureTitleLabel, captureValueLabel, recordCaptureButton])
+        let captureSpacer = NSView()
+        let captureRow = NSStackView(views: [captureTitleLabel, captureSpacer, captureBadge, recordCaptureButton])
         captureRow.orientation = .horizontal
-        captureRow.spacing = 12
+        captureRow.spacing = 10
         captureRow.alignment = .centerY
 
         let historyTitleLabel = NSTextField(labelWithString: "剪贴板历史快捷键")
         historyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         historyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        historyValueLabel.alignment = .right
+        historyValueLabel.alignment = .center
+        historyValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        historyBadge.contentContainer.addSubview(historyValueLabel)
+        NSLayoutConstraint.activate([
+            historyValueLabel.topAnchor.constraint(equalTo: historyBadge.contentContainer.topAnchor, constant: 4),
+            historyValueLabel.leadingAnchor.constraint(equalTo: historyBadge.contentContainer.leadingAnchor, constant: 10),
+            historyValueLabel.trailingAnchor.constraint(equalTo: historyBadge.contentContainer.trailingAnchor, constant: -10),
+            historyValueLabel.bottomAnchor.constraint(equalTo: historyBadge.contentContainer.bottomAnchor, constant: -4),
+            historyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
+        ])
+
         recordHistoryButton.target = self
         recordHistoryButton.action = #selector(recordHistoryShortcut)
-        recordHistoryButton.bezelStyle = .rounded
+        recordHistoryButton.applyLiquidGlassStyle()
 
-        let historyRow = NSStackView(views: [historyTitleLabel, historyValueLabel, recordHistoryButton])
+        let historySpacer = NSView()
+        let historyRow = NSStackView(views: [historyTitleLabel, historySpacer, historyBadge, recordHistoryButton])
         historyRow.orientation = .horizontal
-        historyRow.spacing = 12
+        historyRow.spacing = 10
         historyRow.alignment = .centerY
 
         restoreDefaultButton.target = self
         restoreDefaultButton.action = #selector(restoreDefaults)
-        restoreDefaultButton.bezelStyle = .rounded
+        restoreDefaultButton.applyLiquidGlassStyle()
 
         let restoreRow = NSStackView(views: [NSView(), restoreDefaultButton])
         restoreRow.orientation = .horizontal
@@ -104,13 +132,20 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         stack.alignment = .leading
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
+
+        controlsGroup.translatesAutoresizingMaskIntoConstraints = false
+        controlsGroup.contentContainer.addSubview(stack)
+        content.addSubview(controlsGroup)
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+            controlsGroup.topAnchor.constraint(equalTo: content.topAnchor, constant: 40),
+            controlsGroup.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            controlsGroup.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            controlsGroup.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: controlsGroup.contentContainer.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: controlsGroup.contentContainer.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: controlsGroup.contentContainer.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: controlsGroup.contentContainer.bottomAnchor),
             captureRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             historyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             restoreRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -128,8 +163,11 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         statusLabel.stringValue = ""
         refreshUI()
         NSApp.activate(ignoringOtherApps: true)
-        window?.center()
-        window?.makeKeyAndOrderFront(nil)
+        guard let panel = window as? NSPanel else { return }
+        panel.center()
+        let targetFrame = panel.frame
+        panel.makeKeyAndOrderFront(nil)
+        panel.animateLiquidGlassEntrance(targetFrame: targetFrame)
     }
 
     func update(settings currentSettings: NativeSettings) {
@@ -142,6 +180,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         historyValueLabel.stringValue = settings.historyShortcut.displayString
         recordCaptureButton.title = recordingTarget == .capture ? "按下快捷键…" : "录制快捷键"
         recordHistoryButton.title = recordingTarget == .history ? "按下快捷键…" : "录制快捷键"
+        recordCaptureButton.applyLiquidGlassStyle(active: recordingTarget == .capture)
+        recordHistoryButton.applyLiquidGlassStyle(active: recordingTarget == .history)
         persistenceCheckbox.state = settings.imagePersistenceEnabled ? .on : .off
     }
 
