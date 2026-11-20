@@ -5,19 +5,26 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 INSTALL=false
+ZIP=false
 for arg in "$@"; do
     case "$arg" in
         --install)
             INSTALL=true
             ;;
+        --zip)
+            ZIP=true
+            ;;
         *)
-            echo "Usage: $0 [--install]" >&2
+            echo "Usage: $0 [--install] [--zip]" >&2
             exit 1
             ;;
     esac
 done
 
-echo "==> Building SuperTools (release)..."
+RAW_VERSION="${SUPERTOOLS_VERSION:-0.1.0}"
+VERSION="${RAW_VERSION#v}"
+
+echo "==> Building SuperTools ${VERSION} (release)..."
 swift build -c release
 
 BIN_DIR="$(swift build -c release --show-bin-path)"
@@ -38,7 +45,7 @@ mkdir -p "$MACOS_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/SuperTools"
 chmod 755 "$MACOS_DIR/SuperTools"
 
-cat > "$CONTENTS_DIR/Info.plist" <<'EOF'
+cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -58,9 +65,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -76,6 +83,16 @@ EOF
 echo "==> Signing $APP_DIR (ad-hoc)..."
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
+
+if [[ "$ZIP" == "true" ]]; then
+    ARCH="$(uname -m)"
+    ZIP_NAME="SuperTools-macos-${ARCH}.zip"
+    ZIP_PATH="$ROOT_DIR/dist/$ZIP_NAME"
+    echo "==> Packaging $ZIP_PATH..."
+    rm -f "$ZIP_PATH" "${ZIP_PATH}.sha256"
+    ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ZIP_PATH"
+    (cd "$ROOT_DIR/dist" && shasum -a 256 "$ZIP_NAME" > "${ZIP_NAME}.sha256")
+fi
 
 if [[ "$INSTALL" == "true" ]]; then
     TARGET_DIR="$HOME/Applications"

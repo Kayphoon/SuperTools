@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: build, test & package (macos-15)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          swift --version
+          xcodebuild -version || true
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Package & sign macOS app bundle
+        run: ./scripts/package-mac.sh --zip
+
+      - name: Verify app bundle & archive
+        run: |
+          test -x dist/SuperTools.app/Contents/MacOS/SuperTools
+          test -f dist/SuperTools.app/Contents/Info.plist
+          codesign --verify --deep --strict dist/SuperTools.app
+          test -f dist/SuperTools-macos-arm64.zip
+          test -f dist/SuperTools-macos-arm64.zip.sha256
+           (cd dist && shasum -a 256 -c SuperTools-macos-arm64.zip.sha256)
+
+      - name: Upload app bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperTools-macos-arm64
+          path: |
+            dist/SuperTools-macos-arm64.zip
+            dist/SuperTools-macos-arm64.zip.sha256
+          if-no-files-found: error
