@@ -9,7 +9,7 @@
 | `Package.swift` | SwiftPM 包定义：`SuperCapture`、`SuperClipboard` 两个核心库，可执行入口 `SuperTools`，以及 Swift Testing 测试靶标 |
 | `Sources/SuperCapture/Core/` | 屏幕采集（`ScreenGrabber`）、多显示器选区几何（`SelectionGeometry`、`ResizeHandle`）、马赛克与边框栅格化合成（`AnnotationRenderer`） |
 | `Sources/SuperCapture/Service/` | 单任务串行 `OCRService`（基于 `VNRecognizeTextRequest`，中英双语 accurate 识别） |
-| `Sources/SuperCapture/UI/` | 非激活多屏截图浮层（`OverlayWindowController`、`CanvasView`） |
+| `Sources/SuperCapture/UI/` | 非激活多屏截图浮层（`OverlayWindowController`、`CanvasView`）与手动滚动长截图会话（`ScrollCaptureController`，拼接匹配在 `Core/ScrollStitcher.swift`） |
 | `Sources/SuperClipboard/Monitor/` | 250 ms `changeCount` 剪贴板轮询与敏感类型过滤（`PasteboardMonitor`） |
 | `Sources/SuperClipboard/Storage/` | 内存 LRU 历史仓库（`ClipboardStore`）与有界图片磁盘缓存（`ImageDiskCache`） |
 | `Sources/SuperTools/` | 菜单栏宿主（`SuperToolsApp`）、Carbon 全局热键（`GlobalHotKeys`）、历史面板（`HistoryPanel`）、偏好设置面板（`SettingsPanel`）与配置持久化（`NativeSettings` / `SettingsStore`） |

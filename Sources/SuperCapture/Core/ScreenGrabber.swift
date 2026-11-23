@@ -2,7 +2,7 @@ import AppKit
 import ScreenCaptureKit
 
 public enum CaptureError: LocalizedError {
-    case permissionRequired, displayUnavailable, invalidSelection, allocationFailed
+    case permissionRequired, displayUnavailable, invalidSelection, allocationFailed, scrollNeedsSingleDisplay
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +10,7 @@ public enum CaptureError: LocalizedError {
         case .displayUnavailable: return "显示器已改变，请重新截图。"
         case .invalidSelection: return "选区为空或过大，请缩小选区。"
         case .allocationFailed: return "无法创建截图图像。"
+        case .scrollNeedsSingleDisplay: return "滚动长截图的选区需完整位于一台显示器内，请调整选区后重试。"
         }
     }
 }

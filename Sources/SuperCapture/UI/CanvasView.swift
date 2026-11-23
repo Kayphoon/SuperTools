@@ -43,6 +43,7 @@ final class CanvasView: NSView {
             ("颜色", "1 红 / 2 黄 / 3 蓝", #selector(cycleColor), nil),
             ("线宽", "[ / ] · 2 / 4 / 6 pt", #selector(cycleWidth), nil),
             ("撤销", "⌘Z", #selector(undoAnnotation), nil),
+            ("长截图", "L · 滚动长截图：框选后滚动页面自动拼接", #selector(scrollCapture), nil),
             ("文字", "⇧Enter 或 ⌘C · 只复制文字", #selector(copyText), nil),
             ("复制", "Enter 或双击 · 复制图片", #selector(copyImage), nil),
             ("取消", "Esc", #selector(cancel), nil)
@@ -219,6 +220,7 @@ final class CanvasView: NSView {
             case "r": coordinator.tool = .rectangle
             case "m": coordinator.tool = .mosaic
             case "v": coordinator.tool = .selection
+            case "l": coordinator.beginScrollCapture()
             case "1": coordinator.colorIndex = 0
             case "2": coordinator.colorIndex = 1
             case "3": coordinator.colorIndex = 2
@@ -244,6 +246,7 @@ final class CanvasView: NSView {
         coordinator.refresh()
     }
     @objc private func undoAnnotation() { coordinator?.undo() }
+    @objc private func scrollCapture() { coordinator?.beginScrollCapture() }
     @objc private func copyText() { coordinator?.confirm(textOnly: true) }
     @objc private func copyImage() { coordinator?.confirm(textOnly: false) }
     @objc private func cancel() { coordinator?.cancel() }
