@@ -117,7 +117,7 @@ final class ScrollCaptureController {
 
         let surface = GlassSurfaceView(variant: .regular, cornerRadius: 14,
                                        isInteractive: true, withinWindowBlending: true)
-        let label = NSTextField(labelWithString: "滚动长截图 · 滚动页面，点完成结束")
+        let label = NSTextField(labelWithString: "滚动长截图 · 滚动页面，往回滚可撤销多截部分，点完成结束")
         label.font = .systemFont(ofSize: 12.5, weight: .medium)
         label.textColor = .labelColor
         statusLabel = label
@@ -223,6 +223,19 @@ final class ScrollCaptureController {
         guard let dy = ScrollStitcher.verticalOffset(previous: lastGray, current: gray), dy != 0 else { return }
 
         let newTop = lastFrameTop + dy
+        // Scrolling back up undoes overshoot: everything captured below the
+        // current viewport's bottom edge is trimmed off the canvas, so the
+        // user can back out of an unwanted tail instead of restarting.
+        // Scrolling down again afterwards simply re-appends.
+        if dy < 0, let canvasImage {
+            let currentBottom = newTop + frameHeight
+            let canvasBottom = canvasTop + canvasImage.height
+            if currentBottom > canvasTop, currentBottom < canvasBottom,
+               let trimmed = canvasImage.cropping(to: CGRect(x: 0, y: 0, width: frameWidth,
+                                                              height: currentBottom - canvasTop)) {
+                self.canvasImage = trimmed
+            }
+        }
         let newCanvasTop = min(canvasTop, newTop)
         let newCanvasBottom = max(canvasTop + (canvasImage?.height ?? frameHeight), newTop + frameHeight)
         let newHeight = newCanvasBottom - newCanvasTop
@@ -250,7 +263,7 @@ final class ScrollCaptureController {
 
     private func updateStatus() {
         guard let canvasImage else { return }
-        statusLabel?.stringValue = "滚动长截图 · 已捕获 \(canvasImage.height) px · 滚动页面，点完成结束"
+        statusLabel?.stringValue = "滚动长截图 · 已捕获 \(canvasImage.height) px · 往回滚可撤销，点完成结束"
     }
 
     /// Grayscale copy at full height (so detected offsets are exact pixel rows)
