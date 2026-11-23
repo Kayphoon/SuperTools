@@ -20,6 +20,7 @@ public final class OverlayWindowController {
     private var gesture: Gesture?
     private var annotations: [CaptureAnnotation] = []
     private var pendingAnnotation: CaptureAnnotation?
+    private var scrollCapture: ScrollCaptureController?
     private var generation = 0
     private var isPresented = false
     private let grabber = ScreenGrabber()
@@ -41,7 +42,7 @@ public final class OverlayWindowController {
         }
         let colorName = ["红", "黄", "蓝"][colorIndex]
         return selection.isNull ? "拖动框选 · Esc 取消" :
-            "\(Int(selection.width)) × \(Int(selection.height)) · \(toolName) · \(colorName) · \(Int(widths[widthIndex])) pt · Enter 复制 · ⇧Enter 文字 · Esc 取消"
+            "\(Int(selection.width)) × \(Int(selection.height)) · \(toolName) · \(colorName) · \(Int(widths[widthIndex])) pt · Enter 复制 · ⇧Enter 文字 · L 长截图 · Esc 取消"
     }
 
     public var onCapture: ((CGImage, Bool) -> Void)?
@@ -209,6 +210,37 @@ public final class OverlayWindowController {
         refresh()
     }
 
+    /// Hands the current selection to a manual scroll-capture session.
+    ///
+    /// The dim panels order out so wheel events reach the window underneath;
+    /// the session shows only a mouse-transparent frame plus a small control
+    /// bar. Finishing delivers the stitched image through the normal
+    /// `onCapture` path (image only — annotations do not apply to a region
+    /// whose content moves).
+    func beginScrollCapture() {
+        guard isPresented, !frames.isEmpty, gesture == nil, scrollCapture == nil,
+              !selection.isNull, selection.width >= 40, selection.height >= 40 else { return }
+        guard let display = frames.first(where: { $0.frame.contains(selection) }) else {
+            onError?(CaptureError.scrollNeedsSingleDisplay)
+            return
+        }
+        let session = ScrollCaptureController(selection: selection, displayFrame: display.frame)
+        session.onFinish = { [weak self] image in
+            guard let self else { return }
+            scrollCapture = nil
+            cancel()
+            onCapture?(image, false)
+        }
+        session.onCancel = { [weak self] in
+            guard let self else { return }
+            scrollCapture = nil
+            cancel()
+        }
+        scrollCapture = session
+        for panel in panels { panel.orderOut(nil) }
+        session.start()
+    }
+
     func confirm(textOnly: Bool) {
         guard isPresented, !frames.isEmpty, gesture == nil else { return }
         do {
@@ -221,6 +253,10 @@ public final class OverlayWindowController {
     }
 
     public func cancel() {
+        if let scrollCapture {
+            self.scrollCapture = nil
+            scrollCapture.invalidate()
+        }
         generation += 1
         captureTask?.cancel()
         captureTask = nil
