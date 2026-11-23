@@ -38,12 +38,15 @@ fi
 APP_DIR="$ROOT_DIR/dist/SuperTools.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 echo "==> Assembling $APP_DIR..."
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/SuperTools"
 chmod 755 "$MACOS_DIR/SuperTools"
+cp "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+cp "$ROOT_DIR/Resources/MenuBarIcon.png" "$RESOURCES_DIR/MenuBarIcon.png"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -56,6 +59,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <string>SuperTools</string>
     <key>CFBundleExecutable</key>
     <string>SuperTools</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.supertools.app</string>
     <key>CFBundleInfoDictionaryVersion</key>

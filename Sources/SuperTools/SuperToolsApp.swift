@@ -206,9 +206,21 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 菜单栏图标：优先使用打包进 Resources 的胖扳手模板图（自动适配深浅色），缺失时回退 SF Symbol。
+    private func menuBarImage() -> NSImage {
+        if let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 18)
+            image.accessibilityDescription = "SuperTools"
+            return image
+        }
+        return NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "SuperTools") ?? NSImage()
+    }
+
     private func installMenu() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "SuperTools")
+        item.button?.image = menuBarImage()
         let menu = NSMenu()
         let capture = action("截图", #selector(capture))
         menu.addItem(capture)

@@ -16,6 +16,7 @@
 | `Tests/SuperCaptureTests/` | 跨屏缩放合成、马赛克像素消除与八锚点几何单元测试 |
 | `Tests/SuperClipboardTests/` | 剪贴板去重/LRU 淘汰、敏感项过滤、延迟 OCR 防篡改、50 MB 磁盘预算与设置持久化单元测试 |
 | `scripts/package-mac.sh` | Release 编译、`dist/SuperTools.app` 组装、ad-hoc `codesign` 签名、`--zip` 归档与 `--install` 本地安装脚本 |
+| `Resources/` | 品牌图标资源：`AppIcon.icns`（与 SuperIU 同角色的抱扳手吉祥物，源图 `AppIcon-1024.png`）与菜单栏模板图 `MenuBarIcon.png`（胖扳手剪影，源图 `MenuBarIcon-1024.png`），由打包脚本拷入 `.app/Contents/Resources` |
 | `.github/workflows/` | GitHub Actions 持续集成（`ci.yml`）与标签发版流水线（`release.yml`） |
 
 ## 系统不变量（System Invariants）
