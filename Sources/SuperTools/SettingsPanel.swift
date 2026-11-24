@@ -144,10 +144,14 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private let recordTextKeyButton = NSButton(title: "录制", target: nil, action: nil)
     private let menuBarSwitch = NSSwitch()
     private let pasteSwitch = NSSwitch()
+    private let autoCheckSwitch = NSSwitch()
+    private let autoDownloadSwitch = NSSwitch()
     private let persistenceSwitch = NSSwitch()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     var onApply: ((NativeSettings) throws -> Void)?
+    /// Wired by the app delegate to the updater's manual check.
+    var onCheckUpdates: (() -> Void)?
 
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
@@ -441,13 +445,23 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         menuBarSwitch.action = #selector(toggleMenuBarIcon)
         pasteSwitch.target = self
         pasteSwitch.action = #selector(togglePasteOnSelect)
+        autoCheckSwitch.target = self
+        autoCheckSwitch.action = #selector(toggleAutoCheck)
+        autoDownloadSwitch.target = self
+        autoDownloadSwitch.action = #selector(toggleAutoDownload)
         return card(rows: [
             row(label: "显示菜单栏图标",
                 footnote: "关掉后快捷键照常可用；再次打开 SuperTools 即可恢复图标并打开设置。",
                 control: menuBarSwitch),
             row(label: "选中历史后直接粘贴",
                 footnote: "把选中的历史条目粘贴回原窗口，需要辅助功能权限。",
-                control: pasteSwitch)
+                control: pasteSwitch),
+            row(label: "自动检查更新",
+                footnote: "启动时与每天一次，向 GitHub 查询是否有新版本发布。",
+                control: autoCheckSwitch),
+            row(label: "自动下载更新",
+                footnote: "发现新版本后在后台下载并校验完整性；安装永远等你手动确认。",
+                control: autoDownloadSwitch)
         ])
     }
 
@@ -512,7 +526,13 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         repo.font = .systemFont(ofSize: 12.5, weight: .medium)
         repo.contentTintColor = Self.ink
 
-        let text = NSStackView(views: [name, tagline, repo])
+        let check = NSButton(title: "检查更新…", target: self, action: #selector(checkUpdatesClicked))
+        check.bezelStyle = .inline
+        check.isBordered = false
+        check.font = .systemFont(ofSize: 12.5, weight: .medium)
+        check.contentTintColor = Self.ink
+
+        let text = NSStackView(views: [name, tagline, repo, check])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 5
@@ -554,6 +574,12 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
 
     @objc private func openRepository() {
         NSWorkspace.shared.open(URL(string: "https://github.com/Kayphoon/SuperTools")!)
+    }
+
+    @objc private func checkUpdatesClicked() {
+        onCheckUpdates?()
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.stringValue = "正在检查更新，结果会通过菜单与提示窗口告知。"
     }
 
     @objc private func sectionButtonClicked(_ sender: NSButton) {
@@ -621,6 +647,9 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         // The switch reads as the positive form: on = icon shown.
         menuBarSwitch.state = settings.hideMenuBarIcon ? .off : .on
         pasteSwitch.state = settings.pasteOnSelect ? .on : .off
+        autoCheckSwitch.state = settings.autoCheckUpdates ? .on : .off
+        autoDownloadSwitch.state = settings.autoDownloadUpdates ? .on : .off
+        autoDownloadSwitch.isEnabled = settings.autoCheckUpdates
         persistenceSwitch.state = settings.imagePersistenceEnabled ? .on : .off
     }
 
@@ -651,6 +680,20 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         stopRecording()
         var updated = settings
         updated.imagePersistenceEnabled = (persistenceSwitch.state == .on)
+        applyUpdatedSettings(updated, message: "")
+    }
+
+    @objc private func toggleAutoCheck() {
+        stopRecording()
+        var updated = settings
+        updated.autoCheckUpdates = (autoCheckSwitch.state == .on)
+        applyUpdatedSettings(updated, message: updated.autoCheckUpdates ? "" : "已关闭自动检查更新")
+    }
+
+    @objc private func toggleAutoDownload() {
+        stopRecording()
+        var updated = settings
+        updated.autoDownloadUpdates = (autoDownloadSwitch.state == .on)
         applyUpdatedSettings(updated, message: "")
     }
 

@@ -333,6 +333,40 @@ struct ClipboardTests {
         #expect(decoded.textKey == .textDefault)
     }
 
+    @Test func testVersionCompareOrdersDottedVersionsNumerically() {
+        #expect(VersionCompare.isNewer("1.10.0", than: "1.9.0"))
+        #expect(VersionCompare.isNewer("v1.2.0", than: "1.1.9"))
+        #expect(VersionCompare.isNewer("2.0", than: "1.9.9"))
+        #expect(VersionCompare.isNewer("0.2.0", than: "0.1.0"))
+        #expect(!VersionCompare.isNewer("1.2.0", than: "1.2.0"))
+        #expect(!VersionCompare.isNewer("1.2", than: "1.2.0"))
+        #expect(!VersionCompare.isNewer("0.9.9", than: "1.0.0"))
+        #expect(VersionCompare.normalized("v0.3.1") == "0.3.1")
+    }
+
+    @Test func testUpdatePreferencesDefaultOnPersistAndFallBack() throws {
+        let directory = temporaryDirectory()
+        defer { cleanup(directory) }
+        let store = SettingsStore(fileURL: directory.appendingPathComponent("settings.json"))
+        let defaults = try store.load()
+        #expect(defaults.autoCheckUpdates)
+        #expect(defaults.autoDownloadUpdates)
+        var custom = NativeSettings()
+        custom.autoCheckUpdates = false
+        custom.autoDownloadUpdates = false
+        try store.save(custom)
+        let reloaded = try store.load()
+        #expect(!reloaded.autoCheckUpdates)
+        #expect(!reloaded.autoDownloadUpdates)
+        // A settings.json written before the updater existed has neither key.
+        let legacy = """
+        {"captureShortcut":{"keyCode":19,"modifiers":768},"historyShortcut":{"keyCode":9,"modifiers":768},"imagePersistenceEnabled":false}
+        """
+        let decoded = try JSONDecoder().decode(NativeSettings.self, from: Data(legacy.utf8))
+        #expect(decoded.autoCheckUpdates)
+        #expect(decoded.autoDownloadUpdates)
+    }
+
     @Test func testLiquidGlassPanelsAndControlsEmbedNativeGlassEffects() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()

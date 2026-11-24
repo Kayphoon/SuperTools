@@ -105,6 +105,10 @@ struct NativeSettings: Codable, Equatable {
     /// with no icon needs an escape hatch, so launching the app again asks the
     /// running instance to show the icon and the preferences window.
     var hideMenuBarIcon = false
+    /// Update pipeline: check GitHub Releases on launch and daily, download in
+    /// the background, but never install without an explicit user confirmation.
+    var autoCheckUpdates = true
+    var autoDownloadUpdates = true
 
     func validate() throws {
         try captureShortcut.validate()
@@ -119,7 +123,7 @@ struct NativeSettings: Codable, Equatable {
     // still loads instead of throwing away the user's hotkeys.
     private enum CodingKeys: String, CodingKey {
         case captureShortcut, historyShortcut, imagePersistenceEnabled, imageKey, textKey, pasteOnSelect,
-             hideMenuBarIcon
+             hideMenuBarIcon, autoCheckUpdates, autoDownloadUpdates
     }
 
     init() {}
@@ -130,7 +134,9 @@ struct NativeSettings: Codable, Equatable {
          imageKey: ActionKey = .imageDefault,
          textKey: ActionKey = .textDefault,
          pasteOnSelect: Bool = false,
-         hideMenuBarIcon: Bool = false) {
+         hideMenuBarIcon: Bool = false,
+         autoCheckUpdates: Bool = true,
+         autoDownloadUpdates: Bool = true) {
         self.captureShortcut = captureShortcut
         self.historyShortcut = historyShortcut
         self.imagePersistenceEnabled = imagePersistenceEnabled
@@ -138,6 +144,8 @@ struct NativeSettings: Codable, Equatable {
         self.textKey = textKey
         self.pasteOnSelect = pasteOnSelect
         self.hideMenuBarIcon = hideMenuBarIcon
+        self.autoCheckUpdates = autoCheckUpdates
+        self.autoDownloadUpdates = autoDownloadUpdates
     }
 
     init(from decoder: Decoder) throws {
@@ -149,6 +157,8 @@ struct NativeSettings: Codable, Equatable {
         textKey = try container.decodeIfPresent(ActionKey.self, forKey: .textKey) ?? .textDefault
         pasteOnSelect = try container.decodeIfPresent(Bool.self, forKey: .pasteOnSelect) ?? false
         hideMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .hideMenuBarIcon) ?? false
+        autoCheckUpdates = try container.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
+        autoDownloadUpdates = try container.decodeIfPresent(Bool.self, forKey: .autoDownloadUpdates) ?? true
     }
 }
 

@@ -27,6 +27,8 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private var overlay: OverlayWindowController?
     private var history: HistoryPanel?
     private var settingsPanel: SettingsPanel?
+    private var updater: Updater?
+    private var updatePrompt: UpdatePrompt?
     private let keys = GlobalHotKeys()
     private let ocr = OCRService()
     private let notice = CopyNotice()
@@ -37,6 +39,12 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private var settings = NativeSettings()
     private var captureItem: NSMenuItem?
     private var historyItem: NSMenuItem?
+    private var updateItem: NSMenuItem?
+
+    /// Hosted mode is driven by the external desktop host over stdin/stdout;
+    /// the update pipeline belongs to standalone mode only — the host owns
+    /// the app bundle's lifecycle there.
+    private var isHosted: Bool { CommandLine.arguments.contains("--hosted") }
     private var persistenceItem: NSMenuItem?
     private var hideMenuItem: NSMenuItem?
     private var clearItem: NSMenuItem?
@@ -112,6 +120,15 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
                 self.emit("SUPERIU_NATIVE_SETTINGS ", self.settings)
             }
             self.settingsPanel = settingsPanel
+            if !isHosted {
+                let updater = Updater()
+                updater.onStateChange = { [weak self] state in self?.updateStateChanged(state) }
+                updater.onReadyToInstall = { [weak self] version in self?.showUpdatePrompt(version: version) }
+                updater.onUpToDate = { [weak self] in self?.announce("已是最新版本") }
+                updater.onCheckFailed = { [weak self] message in self?.announce(message) }
+                self.updater = updater
+            }
+            settingsPanel.onCheckUpdates = { [weak self] in self?.updater?.checkNow(userInitiated: true) }
             installMenu()
             observeShowMenuBarRequest()
             keys.capture = { [weak self] in self?.capture() }
@@ -126,6 +143,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             monitor?.start()
+            updater?.start(autoCheck: settings.autoCheckUpdates, autoDownload: settings.autoDownloadUpdates)
             if hosted {
                 FileHandle.standardInput.readabilityHandler = { [weak self] handle in
                     let data: Data
@@ -176,6 +194,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         }
         updateMenu()
         applyMenuBarVisibility()
+        updater?.preferencesChanged(check: settings.autoCheckUpdates, download: settings.autoDownloadUpdates)
         settingsPanel?.update(settings: settings)
         history?.reload()
     }
@@ -312,6 +331,11 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         let preferences = action("设置…", #selector(showSettings))
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
+        if !isHosted {
+            let update = action("检查更新…", #selector(updateMenuClicked))
+            menu.addItem(update)
+            updateItem = update
+        }
         menu.addItem(.separator())
         let hideIcon = action("隐藏菜单栏图标", #selector(toggleMenuBarIcon))
         hideIcon.state = settings.hideMenuBarIcon ? .on : .off
@@ -452,6 +476,56 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         settingsPanel?.present(with: settings)
     }
 
+    // MARK: - Updates
+
+    private func updateStateChanged(_ state: UpdateState) {
+        Diagnostics.log("update: state=\(state)")
+        guard let updateItem else { return }
+        switch state {
+        case .idle, .upToDate, .failed:
+            updateItem.title = "检查更新…"
+            updateItem.isEnabled = true
+        case .checking:
+            updateItem.title = "正在检查更新…"
+            updateItem.isEnabled = false
+        case .available(let version):
+            updateItem.title = "下载新版本 \(version)…"
+            updateItem.isEnabled = true
+        case .downloading(let version):
+            updateItem.title = "正在下载 \(version)…"
+            updateItem.isEnabled = false
+        case .ready(let version):
+            updateItem.title = "安装新版本 \(version)…"
+            updateItem.isEnabled = true
+        case .installing:
+            updateItem.title = "正在安装…"
+            updateItem.isEnabled = false
+        }
+    }
+
+    @objc private func updateMenuClicked() {
+        guard let updater else { return }
+        switch updater.state {
+        case .ready(let version):
+            showUpdatePrompt(version: version)
+        case .available:
+            updater.downloadNow()
+        default:
+            updater.checkNow(userInitiated: true)
+        }
+    }
+
+    private func showUpdatePrompt(version: String) {
+        if let updatePrompt {
+            updatePrompt.present()
+            return
+        }
+        let prompt = UpdatePrompt(version: version)
+        prompt.onInstall = { [weak self] in self?.updater?.installReady() }
+        updatePrompt = prompt
+        prompt.present()
+    }
+
     private func captured(_ image: CGImage, textOnly: Bool) {
         guard let monitor, let store else { return }
         let initialChange = NSPasteboard.general.changeCount
@@ -566,6 +640,8 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         overlay?.stop()
         monitor?.stop()
         keys.stop()
+        updater?.stop()
+        updatePrompt?.close()
         history?.close()
         settingsPanel?.close()
         notice.close()
