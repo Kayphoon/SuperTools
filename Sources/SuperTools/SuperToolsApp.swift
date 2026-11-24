@@ -31,6 +31,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private let ocr = OCRService()
     private let notice = CopyNotice()
     private var ocrTask: Task<Void, Never>?
+    private var ocrSequence = 0
     private var pendingInput = Data()
     private var discardingInput = false
     private var settings = NativeSettings()
@@ -123,6 +124,13 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             }
             print("SUPERIU_NATIVE_READY")
             fflush(stdout)
+            // The recogniser costs ~13 s to load the first time a process uses it,
+            // so pay that here instead of on the first screenshot that needs text.
+            // Every capture is indexed for search, which is why this matters even
+            // when the user never presses the text key.
+            Task.detached(priority: .utility) { [ocr] in
+                await ocr.warmUp()
+            }
         } catch {
             fputs("SuperTools: \(error.localizedDescription)\n", stderr)
             NSApp.terminate(nil)
@@ -284,10 +292,6 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func capture() {
         Diagnostics.log("menu: capture")
-        guard ocrTask == nil else {
-            announce("正在识别文字，请稍后再截图。")
-            return
-        }
         notice.close()
         history?.window?.orderOut(nil)
         settingsPanel?.window?.orderOut(nil)
@@ -356,9 +360,17 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             id = textOnly ? nil : try monitor.copyImage(image)
             if !textOnly { announce("图片已复制") }
         } catch { show(error); return }
+        // One job at a time, newest wins. A screenshot taken while a previous
+        // recognition was still running used to be refused outright ("正在识别文字"),
+        // which read as the hotkey being dead. Cancel the older job instead: its
+        // only remaining work is filling in history text, and a stale result would
+        // be attached to an entry the user has already scrolled past.
+        ocrTask?.cancel()
+        ocrSequence += 1
+        let sequence = ocrSequence
         ocrTask = Task { [weak self] in
             guard let self else { return }
-            defer { ocrTask = nil }
+            if textOnly { announce("正在识别文字…") }
             do {
                 let text = try await ocr.recognize(image)
                 try Task.checkCancellation()
@@ -376,8 +388,16 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
                     history?.reload()
                 }
             } catch is CancellationError {
-                // Termination cancels the single owned OCR job.
-            } catch { show(error) }
+                // Superseded by a newer capture, or the app is terminating.
+            } catch {
+                // Indexing an image is best-effort: a picture with no text simply has
+                // nothing to index, so it must not raise a visible error. Only the
+                // explicit text action reports back to the user.
+                if textOnly { show(error) }
+            }
+            // Only the newest job owns the slot; a cancelled predecessor finishing
+            // later must not clear a task that is already running.
+            if sequence == ocrSequence { ocrTask = nil }
         }
     }
 
