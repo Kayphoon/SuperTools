@@ -291,6 +291,11 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         notice.close()
         history?.window?.orderOut(nil)
         settingsPanel?.window?.orderOut(nil)
+        // A hotkey now also fires while this status menu is being tracked. Dismiss
+        // the menu before grabbing, or it ends up in the screenshot (and the menu
+        // tracking loop keeps the overlay from taking the keyboard).
+        statusItem?.menu?.cancelTrackingWithoutAnimation()
+        if NSApp.isActive { NSApp.deactivate() }
         guard ensureScreenRecordingPermission() else { return }
         overlay?.present()
     }

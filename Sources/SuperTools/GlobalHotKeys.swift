@@ -54,7 +54,12 @@ final class GlobalHotKeys {
     private func installHandler() throws {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+        // The dispatcher target, not the application target: while a menu is being
+        // tracked the app runs a nested event loop, and events addressed to the
+        // application target are not dispatched in it. That made the hotkey look
+        // dead whenever the status item menu was open. The dispatcher sees the
+        // hotkey before it is routed, so it fires in every event loop mode.
+        let status = InstallEventHandler(GetEventDispatcherTarget(), { _, event, userData in
             guard let event, let userData else { return OSStatus(eventNotHandledErr) }
             var identifier = EventHotKeyID()
             let result = GetEventParameter(event, EventParamName(kEventParamDirectObject),

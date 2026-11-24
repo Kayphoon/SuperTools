@@ -96,41 +96,17 @@ public final class OverlayWindowController {
             onError?(CaptureError.permissionRequired)
             return
         }
-        Diagnostics.log("overlay: permission OK, showing \(panels.count) panel(s)")
+        Diagnostics.log("overlay: permission OK, capturing \(panels.count) panel(s)")
         generation += 1
         let token = generation
         selection = .null
         annotations.removeAll()
         tool = .selection
         isPresented = true
-        // Show the prewarmed transparent panels before ScreenCaptureKit replies.
-        // The filter excludes this helper, so the overlays never enter the image.
-        for panel in panels {
-            (panel.contentView as? CanvasView)?.refresh()
-            // Re-assert the level: a window that was ordered out and back can come
-            // back at the default floating level, hidden behind full-screen apps.
-            panel.level = .screenSaver
-            panel.orderFrontRegardless()
-        }
-        // A `.nonactivatingPanel` cannot become the key window while the hosting app is
-        // `.accessory`, so the overlay shows but every keystroke keeps going to the app
-        // the user came from. Promote the app to `.regular` while the overlay is up
-        // (`.accessory` is restored in `cancel()`), then make the panel key.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        let mouse = NSEvent.mouseLocation
-        let activePanel = panels.first(where: { $0.frame.contains(mouse) }) ?? panels.first
-        activePanel?.makeKeyAndOrderFront(nil)
-        activePanel?.makeFirstResponder(activePanel?.contentView)
-        // Activation lands a few hundred milliseconds later and clears the key window
-        // on the way, so the panel has to be re-keyed until it sticks.
-        settleKeyWindow(activePanel)
-        DispatchQueue.main.async {
-            Diagnostics.log("overlay: +0ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue)")
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            Diagnostics.log("overlay: +400ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true)")
-        }
+        // Capture before anything is shown or activated. Taking focus first makes the
+        // system redraw the menu bar for this process, and grabbing mid-redraw froze
+        // a half-drawn menu bar into the screenshot. The overlays are excluded from
+        // the filter anyway, so they do not need to be on screen for the grab.
         captureTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -149,7 +125,7 @@ public final class OverlayWindowController {
                     panel.setFrame(display.frame, display: false)
                     canvas.refresh()
                 }
-                Diagnostics.log("overlay: panels updated, visible=\(panels.filter(\.isVisible).count)")
+                present(images.count)
             } catch is CancellationError {
                 Diagnostics.log("overlay: capture cancelled")
             } catch {
@@ -163,17 +139,45 @@ public final class OverlayWindowController {
         }
     }
 
+    /// Put the already-grabbed frames on screen and take the keyboard.
+    ///
+    /// Deliberately does not change the activation policy: promoting to `.regular`
+    /// makes the system draw a Dock tile and a real menu bar for this process, which
+    /// flickered whenever the overlay opened. An `.accessory` process can still own
+    /// the key window, so activation plus `makeKey` is enough.
+    private func present(_ frameCount: Int) {
+        for panel in panels {
+            (panel.contentView as? CanvasView)?.refresh()
+            // Re-assert the level: a window that was ordered out and back can come
+            // back at the default floating level, hidden behind full-screen apps.
+            panel.level = .screenSaver
+            panel.orderFrontRegardless()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let mouse = NSEvent.mouseLocation
+        let activePanel = panels.first(where: { $0.frame.contains(mouse) }) ?? panels.first
+        activePanel?.makeKeyAndOrderFront(nil)
+        activePanel?.makeFirstResponder(activePanel?.contentView)
+        // Activation lands a few hundred milliseconds later and clears the key window
+        // on the way, so the panel has to be re-keyed until it sticks.
+        settleKeyWindow(activePanel)
+        Diagnostics.log("overlay: shown frames=\(frameCount) active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            Diagnostics.log("overlay: +400ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true)")
+        }
+    }
+
     /// Re-assert key-window status until activation has settled.
     ///
-    /// Promoting the app to `.regular` activates it asynchronously, and that
-    /// activation clears the key window, so a single `makeKey` right after
-    /// `activate` is always overwritten a moment later. Retry for as long as the
-    /// overlay is up and the panel still is not the key window.
+    /// Activation is asynchronous and clears the key window on the way, so a single
+    /// `makeKey` right after `activate` is always overwritten a moment later. Retry
+    /// for as long as the overlay is up and the panel still is not the key window.
+    /// Re-activating on each retry matters: when the request was made while another
+    /// process owned the menu (a status menu being tracked), macOS drops it, and
+    /// `makeKey` alone can never fix an application that was never activated.
     private func settleKeyWindow(_ panel: CapturePanel?, attempt: Int = 0) {
         guard isPresented, let panel else { return }
-        // Activation finishes asynchronously and clears whichever key window was set
-        // before it, so a single successful sample proves nothing. Keep re-asserting
-        // for ~2 s instead of stopping at the first `isKeyWindow` that happens to be true.
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
         if !panel.isKeyWindow {
             panel.makeKey()
             panel.makeFirstResponder(panel.contentView)
