@@ -343,9 +343,12 @@ struct ClipboardTests {
             historyPanel.reload()
             let settingsPanel = SettingsPanel(settings: NativeSettings())
             #expect(historyPanel.window?.contentView is GlassSurfaceView)
-            #expect(settingsPanel.window?.contentView is GlassSurfaceView)
+            // The settings window deliberately left the glass family: it is a
+            // standard titled window on the Kami paper canvas, so it must not
+            // come back as a glass surface.
+            #expect(!(settingsPanel.window?.contentView is GlassSurfaceView))
+            #expect(settingsPanel.window?.styleMask.contains(.titled) == true)
             #expect(historyPanel.window?.isOpaque == false)
-            #expect(settingsPanel.window?.isOpaque == false)
             let button = NSButton(title: "测试", target: nil, action: nil)
             button.applyLiquidGlassStyle(active: true)
             #if compiler(>=6.2)
