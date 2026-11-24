@@ -101,6 +101,10 @@ struct NativeSettings: Codable, Equatable {
     /// Paste the selected history entry straight into the app the panel was opened
     /// from. Needs Accessibility; off by default so a fresh install asks nothing.
     var pasteOnSelect = false
+    /// Keep every hotkey working but stop drawing the status item. A menu bar app
+    /// with no icon needs an escape hatch, so launching the app again asks the
+    /// running instance to show the icon and the preferences window.
+    var hideMenuBarIcon = false
 
     func validate() throws {
         try captureShortcut.validate()
@@ -114,7 +118,8 @@ struct NativeSettings: Codable, Equatable {
     // New fields must stay optional so a settings.json written by an older build
     // still loads instead of throwing away the user's hotkeys.
     private enum CodingKeys: String, CodingKey {
-        case captureShortcut, historyShortcut, imagePersistenceEnabled, imageKey, textKey, pasteOnSelect
+        case captureShortcut, historyShortcut, imagePersistenceEnabled, imageKey, textKey, pasteOnSelect,
+             hideMenuBarIcon
     }
 
     init() {}
@@ -124,13 +129,15 @@ struct NativeSettings: Codable, Equatable {
          imagePersistenceEnabled: Bool = false,
          imageKey: ActionKey = .imageDefault,
          textKey: ActionKey = .textDefault,
-         pasteOnSelect: Bool = false) {
+         pasteOnSelect: Bool = false,
+         hideMenuBarIcon: Bool = false) {
         self.captureShortcut = captureShortcut
         self.historyShortcut = historyShortcut
         self.imagePersistenceEnabled = imagePersistenceEnabled
         self.imageKey = imageKey
         self.textKey = textKey
         self.pasteOnSelect = pasteOnSelect
+        self.hideMenuBarIcon = hideMenuBarIcon
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +148,7 @@ struct NativeSettings: Codable, Equatable {
         imageKey = try container.decodeIfPresent(ActionKey.self, forKey: .imageKey) ?? .imageDefault
         textKey = try container.decodeIfPresent(ActionKey.self, forKey: .textKey) ?? .textDefault
         pasteOnSelect = try container.decodeIfPresent(Bool.self, forKey: .pasteOnSelect) ?? false
+        hideMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .hideMenuBarIcon) ?? false
     }
 }
 

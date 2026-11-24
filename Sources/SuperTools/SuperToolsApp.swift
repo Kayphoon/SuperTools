@@ -38,19 +38,32 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private var captureItem: NSMenuItem?
     private var historyItem: NSMenuItem?
     private var persistenceItem: NSMenuItem?
+    private var hideMenuItem: NSMenuItem?
     private var clearItem: NSMenuItem?
     private var resetClear: DispatchWorkItem?
+
+    /// Posted by a second launch so a hidden status item can come back. A menu bar
+    /// app without an icon has no other in-app way to reach its preferences.
+    private static let showMenuBarRequest = Notification.Name("com.supertools.app.showMenuBar")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Diagnostics.log("launch: pid \(ProcessInfo.processInfo.processIdentifier) bundle=\(Bundle.main.bundleIdentifier ?? "nil")")
         Diagnostics.log("launch: screens=\(NSScreen.screens.count) screenAccess=\(CGPreflightScreenCaptureAccess())")
         Diagnostics.log("launch: args=[\(CommandLine.arguments.dropFirst().joined(separator: " "))]")
-        if let id = Bundle.main.bundleIdentifier {
+        // A second launch is the only way back from a hidden menu bar icon, so it
+        // asks the running instance to show the icon and exits. Starting a second copy
+        // would instead collide on the same global hotkeys.
+        if let id = Bundle.main.bundleIdentifier, !CommandLine.arguments.contains("--hosted") {
             let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
                 .map(\.processIdentifier)
                 .filter { $0 != ProcessInfo.processInfo.processIdentifier }
             if !others.isEmpty {
-                Diagnostics.log("launch: WARNING another instance running pid=\(others) — global hotkeys will collide")
+                Diagnostics.log("launch: another instance running pid=\(others) — asking it to show the menu bar")
+                DistributedNotificationCenter.default().postNotificationName(Self.showMenuBarRequest,
+                                                                             object: id, userInfo: nil,
+                                                                             deliverImmediately: true)
+                fflush(stdout)
+                exit(0)
             }
         }
         do {
@@ -62,7 +75,15 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             }
             let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
                                                      appropriateFor: nil, create: false)
-            let store = try ClipboardStore(directory: caches.appendingPathComponent("com.supertools.app", isDirectory: true))
+            // macOS puts Vision's compiled-model cache in the bundle-id cache directory
+            // (`com.supertools.app/com.apple.e5rt.e5bundlecache`), so the clipboard store
+            // keeps its own subdirectory. The store deletes everything it does not own
+            // when it reconciles; pointed at the parent, that used to remove the model
+            // cache on every launch and make each one pay the ~13 s recogniser load.
+            let cacheRoot = caches.appendingPathComponent("com.supertools.app", isDirectory: true)
+            let storeDirectory = cacheRoot.appendingPathComponent("clipboard", isDirectory: true)
+            Self.migrateLegacyCache(from: cacheRoot, into: storeDirectory)
+            let store = try ClipboardStore(directory: storeDirectory)
             self.store = store
             if hasPersistedSettings {
                 try store.setImagePersistenceEnabled(settings.imagePersistenceEnabled)
@@ -92,6 +113,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             }
             self.settingsPanel = settingsPanel
             installMenu()
+            observeShowMenuBarRequest()
             keys.capture = { [weak self] in self?.capture() }
             keys.history = { [weak self] in self?.showHistory() }
             let hosted = CommandLine.arguments.contains("--hosted")
@@ -124,13 +146,10 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             }
             print("SUPERIU_NATIVE_READY")
             fflush(stdout)
-            // The recogniser costs ~13 s to load the first time a process uses it,
-            // so pay that here instead of on the first screenshot that needs text.
-            // Every capture is indexed for search, which is why this matters even
-            // when the user never presses the text key.
-            Task.detached(priority: .utility) { [ocr] in
-                await ocr.warmUp()
-            }
+            // No warm-up at launch: Vision loads its recogniser on the first image that
+            // contains text, and every capture already runs a background OCR pass to
+            // index the clipboard entry. Paying the load there keeps a ~30 MB model out
+            // of the process for anyone who never captures a screenshot.
         } catch {
             fputs("SuperTools: \(error.localizedDescription)\n", stderr)
             NSApp.terminate(nil)
@@ -156,8 +175,37 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             PasteSynthesizer.openAccessibilitySettings()
         }
         updateMenu()
+        applyMenuBarVisibility()
         settingsPanel?.update(settings: settings)
         history?.reload()
+    }
+
+    /// History used to live directly beside macOS's own caches in the bundle-id
+    /// directory. Move it into `clipboard/` once, so the store's cleanup cannot
+    /// reach the Vision model cache that shares the parent directory.
+    private static func migrateLegacyCache(from root: URL, into directory: URL) {
+        let fileManager = FileManager.default
+        let legacyIndex = root.appendingPathComponent("history.json")
+        let newIndex = directory.appendingPathComponent("history.json")
+        guard fileManager.fileExists(atPath: legacyIndex.path),
+              !fileManager.fileExists(atPath: newIndex.path) else { return }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+            for name in try fileManager.contentsOfDirectory(atPath: root.path) where isImageCacheName(name) {
+                try fileManager.moveItem(at: root.appendingPathComponent(name),
+                                         to: directory.appendingPathComponent(name))
+            }
+            try fileManager.moveItem(at: legacyIndex, to: newIndex)
+            Diagnostics.log("store: migrated legacy cache into \(directory.lastPathComponent)")
+        } catch {
+            Diagnostics.log("store: legacy cache migration failed — \(error.localizedDescription)")
+        }
+    }
+
+    private static func isImageCacheName(_ name: String) -> Bool {
+        guard name.count == 68, name.hasSuffix(".png") else { return false }
+        return name.dropLast(4).utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     private func receiveInput(_ data: Data) {
@@ -265,10 +313,16 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
         menu.addItem(.separator())
+        let hideIcon = action("隐藏菜单栏图标", #selector(toggleMenuBarIcon))
+        hideIcon.state = settings.hideMenuBarIcon ? .on : .off
+        menu.addItem(hideIcon)
+        hideMenuItem = hideIcon
+        menu.addItem(.separator())
         menu.addItem(action("退出 SuperTools", #selector(quit)))
         item.menu = menu
         statusItem = item
         updateMenu()
+        applyMenuBarVisibility()
     }
 
     private func updateMenu() {
@@ -277,6 +331,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         historyItem?.keyEquivalent = settings.historyShortcut.keyEquivalent
         historyItem?.keyEquivalentModifierMask = settings.historyShortcut.menuModifiers
         persistenceItem?.state = settings.imagePersistenceEnabled ? .on : .off
+        hideMenuItem?.state = settings.hideMenuBarIcon ? .on : .off
     }
 
     private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
@@ -288,6 +343,49 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         Diagnostics.log("openScreenRecordingSettings: preflight=\(CGPreflightScreenCaptureAccess())")
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
         NSWorkspace.shared.open(url)
+    }
+
+    /// Distribute the visibility of the status item from the persisted setting. The
+    /// item stays allocated while hidden so `announce` can still post accessibility
+    /// announcements through its button.
+    private func applyMenuBarVisibility() {
+        guard let statusItem else { return }
+        let visible = !settings.hideMenuBarIcon
+        guard statusItem.isVisible != visible else { return }
+        statusItem.isVisible = visible
+        Diagnostics.log("menu: status item visible=\(visible)")
+    }
+
+    @objc private func toggleMenuBarIcon() {
+        var updated = settings
+        updated.hideMenuBarIcon.toggle()
+        do {
+            try applySettings(updated)
+            if updated.hideMenuBarIcon {
+                announce("菜单栏图标已隐藏。快捷键照常可用，再次打开 SuperTools 即可恢复。")
+            } else {
+                announce("菜单栏图标已恢复")
+            }
+        } catch { show(error) }
+    }
+
+    private func observeShowMenuBarRequest() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.showMenuBarRequest, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revealMenuBar() }
+        }
+    }
+
+    /// A second launch means the icon is hidden and the user wants it back.
+    private func revealMenuBar() {
+        Diagnostics.log("menu: reveal requested by a second launch")
+        settings.hideMenuBarIcon = false
+        try? settingsStore?.save(settings)
+        updateMenu()
+        applyMenuBarVisibility()
+        settingsPanel?.update(settings: settings)
+        showSettings()
     }
 
     @objc private func capture() {
@@ -336,14 +434,16 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Shared by the history panel's auto-paste and any future caller.
     private func autoPaste(into target: NSRunningApplication?) {
-        switch PasteSynthesizer.paste(into: target) {
-        case .pasted:
-            Diagnostics.log("paster: done")
-        case .permissionRequired:
-            announce("已复制。开启「辅助功能」权限后可自动粘贴，正在打开设置…")
-            PasteSynthesizer.openAccessibilitySettings()
-        case .failed:
-            show(PasteSynthesizerError.failed)
+        Task { @MainActor in
+            switch await PasteSynthesizer.paste(into: target) {
+            case .pasted:
+                Diagnostics.log("paster: done")
+            case .permissionRequired:
+                announce("已复制。开启「辅助功能」权限后可自动粘贴，正在打开设置…")
+                PasteSynthesizer.openAccessibilitySettings()
+            case .failed:
+                show(PasteSynthesizerError.failed)
+            }
         }
     }
 
@@ -370,7 +470,12 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         let sequence = ocrSequence
         ocrTask = Task { [weak self] in
             guard let self else { return }
-            if textOnly { announce("正在识别文字…") }
+            if textOnly {
+                // The first request in a process pays the whole recogniser load. Say so
+                // instead of leaving the user staring at the same hint for 13 s.
+                let prepared = await ocr.isPrepared
+                announce(prepared ? "正在识别文字…" : "首次识别需加载模型，可能要十几秒…")
+            }
             do {
                 let text = try await ocr.recognize(image)
                 try Task.checkCancellation()

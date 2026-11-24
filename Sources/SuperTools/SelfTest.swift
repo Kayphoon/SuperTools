@@ -75,7 +75,7 @@ final class SelfTest: NSObject, NSApplicationDelegate {
             // the only part that depends on the Accessibility grant.
             Diagnostics.log("paster: AXIsProcessTrusted=\(PasteSynthesizer.isTrusted)")
             if PasteSynthesizer.isTrusted {
-                Diagnostics.log("paster: outcome=\(PasteSynthesizer.paste(into: nil)) (no-op target)")
+                Diagnostics.log("paster: outcome=\(await PasteSynthesizer.paste(into: nil)) (no-op target)")
             } else {
                 Diagnostics.log("paster: would report permissionRequired, settings fall back to copy-only")
             }

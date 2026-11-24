@@ -44,6 +44,20 @@ struct RendererTests {
         #expect(result.height == 32)
     }
 
+    @Test func testSelectionOnNonRetinaDisplayKeepsItsOwnScale() throws {
+        let retina = DisplayFrame(frame: CGRect(x: 0, y: 0, width: 16, height: 16),
+                                  image: try image(width: 32, height: 32))
+        let plain = DisplayFrame(frame: CGRect(x: 16, y: 0, width: 16, height: 16),
+                                 image: try image(width: 16, height: 16))
+        let result = try AnnotationRenderer.render(frames: [retina, plain],
+                                                   selection: CGRect(x: 16, y: 0, width: 16, height: 16),
+                                                   annotations: [])
+        // The selection only touches the 1x display, so the Retina display must not
+        // force a 2x bitmap (4x the pixels) that then goes into OCR.
+        #expect(result.width == 16)
+        #expect(result.height == 16)
+    }
+
     @Test func testEmptySelectionIsRejected() {
         #expect(throws: (any Error).self) {
             try AnnotationRenderer.render(frames: [], selection: .null, annotations: [])

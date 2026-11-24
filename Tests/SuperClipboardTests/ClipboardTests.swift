@@ -308,6 +308,18 @@ struct ClipboardTests {
         #expect(throws: (any Error).self) { try settings.validate() }
     }
 
+    @Test func testHideMenuBarIconDefaultsOffAndPersists() throws {
+        let directory = temporaryDirectory()
+        defer { cleanup(directory) }
+        let store = SettingsStore(fileURL: directory.appendingPathComponent("settings.json"))
+        #expect(try store.load().hideMenuBarIcon == false)
+        var custom = NativeSettings()
+        custom.hideMenuBarIcon = true
+        try store.save(custom)
+        #expect(try store.load().hideMenuBarIcon)
+    }
+
+
     @Test func testSettingsFromOlderBuildWithoutActionKeysFallsBackToDefaults() throws {
         // A settings.json written before this feature has no action-key fields.
         let legacy = """

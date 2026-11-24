@@ -4,12 +4,26 @@ import CoreGraphics
 
 public enum OCRFailure: LocalizedError {
     case empty
-    public var errorDescription: String? { "选区中未识别到文字，剪贴板未改变。" }
+    case recognizerFailed(code: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .empty: return "选区中未识别到文字，剪贴板未改变。"
+        case .recognizerFailed(let code): return "文字识别失败（错误码 \(code)），请重试。"
+        }
+    }
 }
 
 // An actor serializes expensive Vision work; the host accepts only one image job
 // at a time, so full-resolution images cannot accumulate behind this actor.
 public actor OCRService {
+    /// Vision loads its recogniser and language model on the first request of the
+    /// process and keeps them resident afterwards, so the host can tell a slow
+    /// first capture apart from a broken one.
+    private var hasLoadedModel = false
+
+    public var isPrepared: Bool { hasLoadedModel }
+
     public init() {}
 
     public func recognize(_ image: CGImage) throws -> String {
@@ -19,40 +33,31 @@ public actor OCRService {
         // Chinese into gibberish (measured 315 nonsense chars against 834 correct
         // ones), so every call needs the accurate recogniser.
         request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+        // Simplified Chinese + English only, which is what this app is used for.
+        // Dropping zh-Hant does not change the load time (measured 12.55 s with it and
+        // 12.79 s without); it just stops Vision from offering Traditional candidates
+        // for Simplified text. Keeping fewer curated languages also avoids the garbled
+        // output seen when only en-US was listed.
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
         // The languages are already listed, so detection only reshuffles candidates;
         // it also makes the cold-start model load slower (27 s against 14 s).
         request.automaticallyDetectsLanguage = false
         request.usesLanguageCorrection = true
         do {
             try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        } catch let error as NSError where error.domain.contains("TextRecognition") {
-            // Vision reports "nothing readable here" as a CRImageReaderError instead
-            // of returning an empty result list. That is a normal outcome for a
-            // screenshot of a blank area, not a failure worth surfacing as-is.
-            throw OCRFailure.empty
+        } catch {
+            // A picture or a blank area is not an error: Vision returns an empty
+            // result list for those, and the caller turns that into `OCRFailure.empty`.
+            // Anything thrown here is a real recogniser failure (error 1 is the E5RT /
+            // Neural Engine path failing, not "no text"), so it must stay visible
+            // instead of being reported as an empty selection.
+            let code = (error as NSError).code
+            Diagnostics.log("ocr: recogniser failed domain=\((error as NSError).domain) code=\(code)")
+            throw OCRFailure.recognizerFailed(code: code)
         }
         try Task.checkCancellation()
+        hasLoadedModel = true
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 
-    /// Load the recogniser before the first screenshot needs it.
-    ///
-    /// The recogniser costs ~13 s to load the first time a process uses it, against
-    /// ~0.3 s per call afterwards. Every screenshot runs OCR to index its text, so
-    /// that load used to land on the first capture after each launch. Paying it in
-    /// the background at launch keeps the capture path at ~0.3 s.
-    public func warmUp() {
-        let side = 64
-        guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
-                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
-        if let image = context.makeImage() {
-            let start = Date()
-            _ = try? recognize(image)
-            Diagnostics.log("ocr: warm-up \(String(format: "%.2f", Date().timeIntervalSince(start)))s")
-        }
-    }
 }

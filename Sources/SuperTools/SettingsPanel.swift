@@ -1,6 +1,14 @@
 import AppKit
 import SuperCapture
 
+/// A settings window that can take the keyboard. The recording feature matches
+/// incoming events against `event.window`, and a panel that never becomes key
+/// silently drops every keystroke, so this cannot use `.nonactivatingPanel`.
+private final class SettingsWindow: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
 final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private enum RecordingTarget {
@@ -39,15 +47,20 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         target: nil,
         action: nil
     )
+    private let hideMenuBarCheckbox = NSButton(
+        checkboxWithTitle: "隐藏菜单栏图标（快捷键照常可用，再次打开 SuperTools 可恢复）",
+        target: nil,
+        action: nil
+    )
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     var onApply: ((NativeSettings) throws -> Void)?
 
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
-        let panel = NSPanel(
-            contentRect: CGRect(x: 0, y: 0, width: 500, height: 388),
-            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+        let panel = SettingsWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 500, height: 424),
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -120,6 +133,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         // bare Return / Space is legitimate here (unlike a global hotkey).
         let imageKeyTitleLabel = NSTextField(labelWithString: "截图后 · 复制图片")
         imageKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        imageKeyTitleLabel.toolTip = "默认 ↵：在选区内按一下就复制图片（双击选区效果相同）。"
         imageKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
         imageKeyValueLabel.alignment = .center
         imageKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -141,6 +155,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
 
         let textKeyTitleLabel = NSTextField(labelWithString: "截图后 · 识别文字")
         textKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        textKeyTitleLabel.toolTip = "默认空格：在选区内按一下就只识别并复制文字（⇧↵ / ⌘C 同样可用）。"
         textKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
         textKeyValueLabel.alignment = .center
         textKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -176,6 +191,9 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         pasteCheckbox.target = self
         pasteCheckbox.action = #selector(togglePasteOnSelect)
 
+        hideMenuBarCheckbox.target = self
+        hideMenuBarCheckbox.action = #selector(toggleHideMenuBarIcon)
+
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.maximumNumberOfLines = 2
@@ -193,6 +211,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
             divider2,
             persistenceCheckbox,
             pasteCheckbox,
+            hideMenuBarCheckbox,
             statusLabel
         ])
         stack.orientation = .vertical
@@ -262,6 +281,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         recordTextKeyButton.applyLiquidGlassStyle(active: recordingTarget == .textKey)
         persistenceCheckbox.state = settings.imagePersistenceEnabled ? .on : .off
         pasteCheckbox.state = settings.pasteOnSelect ? .on : .off
+        hideMenuBarCheckbox.state = settings.hideMenuBarIcon ? .on : .off
     }
 
     @objc private func recordCaptureShortcut() {
@@ -279,6 +299,15 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         var updated = settings
         updated.pasteOnSelect = (pasteCheckbox.state == .on)
         applyUpdatedSettings(updated, message: updated.pasteOnSelect ? "选中历史后将直接粘贴" : "")
+    }
+
+    @objc private func toggleHideMenuBarIcon() {
+        stopRecording()
+        var updated = settings
+        updated.hideMenuBarIcon = (hideMenuBarCheckbox.state == .on)
+        applyUpdatedSettings(updated, message: updated.hideMenuBarIcon
+                             ? "菜单栏图标已隐藏，再点一次或重新打开 SuperTools 可恢复。"
+                             : "菜单栏图标已恢复")
     }
 
 

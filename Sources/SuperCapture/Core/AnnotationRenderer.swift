@@ -21,7 +21,15 @@ public enum AnnotationRenderer {
         guard !selection.isNull, selection.width >= 1, selection.height >= 1 else {
             throw CaptureError.invalidSelection
         }
-        let scale = frames.map { CGFloat($0.image.width) / $0.frame.width }.max() ?? 1
+        // Only the displays the selection actually covers decide the output scale.
+        // Taking the maximum across every attached display made a 1x screenshot of a
+        // 1x monitor come out at 2x (4x the pixels) whenever a Retina display happened
+        // to be connected, which then went straight into OCR.
+        let covered = frames.filter {
+            let intersection = $0.frame.intersection(selection)
+            return !intersection.isNull && intersection.width >= 1 && intersection.height >= 1
+        }
+        let scale = covered.map { CGFloat($0.image.width) / $0.frame.width }.max() ?? 1
         let width = ceil(selection.width * scale), height = ceil(selection.height * scale)
         guard width * height <= 64_000_000,
               let context = CGContext(data: nil, width: Int(width), height: Int(height),

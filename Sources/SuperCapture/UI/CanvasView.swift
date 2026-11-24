@@ -274,41 +274,18 @@ final class CanvasView: NSView {
             return
         }
         switch event.charactersIgnoringModifiers?.lowercased() {
-        case "c" where command:
-            coordinator.confirm(textOnly: true)
-        case "z" where command:
-            coordinator.undo()
-        case "r" where !command:
-            coordinator.tool = .rectangle
-        case "m" where !command:
-            coordinator.tool = .mosaic
-        case "v" where !command:
-            coordinator.tool = .selection
-        case "1" where !command:
-            coordinator.colorIndex = 0
-        case "2" where !command:
-            coordinator.colorIndex = 1
-        case "3" where !command:
-            coordinator.colorIndex = 2
-        case "[" where !command:
-            coordinator.widthIndex = max(0, coordinator.widthIndex - 1)
-        case "]" where !command:
-            coordinator.widthIndex = min(2, coordinator.widthIndex + 1)
-        default:
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "c" where command: coordinator.confirm(textOnly: true)
-            case "z" where command: coordinator.undo()
-            case "r": coordinator.tool = .rectangle
-            case "m": coordinator.tool = .mosaic
-            case "v": coordinator.tool = .selection
-            case "l": coordinator.beginScrollCapture()
-            case "1": coordinator.colorIndex = 0
-            case "2": coordinator.colorIndex = 1
-            case "3": coordinator.colorIndex = 2
-            case "[": coordinator.widthIndex = max(0, coordinator.widthIndex - 1)
-            case "]": coordinator.widthIndex = min(2, coordinator.widthIndex + 1)
-            default: super.keyDown(with: event)
-            }
+        case "c" where command: coordinator.confirm(textOnly: true)
+        case "z" where command: coordinator.undo()
+        case "r" where !command: coordinator.tool = .rectangle
+        case "m" where !command: coordinator.tool = .mosaic
+        case "v" where !command: coordinator.tool = .selection
+        case "l" where !command: coordinator.beginScrollCapture()
+        case "1" where !command: coordinator.colorIndex = 0
+        case "2" where !command: coordinator.colorIndex = 1
+        case "3" where !command: coordinator.colorIndex = 2
+        case "[" where !command: coordinator.widthIndex = max(0, coordinator.widthIndex - 1)
+        case "]" where !command: coordinator.widthIndex = min(2, coordinator.widthIndex + 1)
+        default: super.keyDown(with: event)
         }
         coordinator.refresh()
     }

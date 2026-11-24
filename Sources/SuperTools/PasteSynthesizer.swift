@@ -40,7 +40,7 @@ enum PasteSynthesizer {
     /// Send `Command+V`. `target` is the app that should receive it; it is
     /// reactivated first because the history panel currently holds focus.
     @MainActor
-    static func paste(into target: NSRunningApplication?) -> Outcome {
+    static func paste(into target: NSRunningApplication?) async -> Outcome {
         guard isTrusted else {
             Diagnostics.log("paster: refused — Accessibility not granted")
             return .permissionRequired
@@ -49,7 +49,7 @@ enum PasteSynthesizer {
             target.activate(options: [])
             // The activation is asynchronous; synthesising the keystroke in the
             // same turn would deliver it to the panel that still has focus.
-            Thread.sleep(forTimeInterval: 0.12)
+            try? await Task.sleep(for: .milliseconds(120))
         }
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
