@@ -5,14 +5,56 @@ private final class ScrollPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Selection frame with live feedback. A green wash flashes each time a new
+/// frame is stitched in, so the user can see the capture is keeping up; when
+/// the page moved but no overlap matched (scrolled too fast, or a jump), the
+/// frame turns orange for a moment to warn that a slice may be missing.
 private final class BorderView: NSView {
+    private var flashAlpha: CGFloat = 0
+    private var warningUntil: Date?
+    private var feedbackTimer: Timer?
+
+    func flashCaptured() {
+        flashAlpha = 0.16
+        needsDisplay = true
+        runFeedbackTimer()
+    }
+
+    func showWarning() {
+        warningUntil = Date().addingTimeInterval(1.2)
+        needsDisplay = true
+        runFeedbackTimer()
+    }
+
+    private func runFeedbackTimer() {
+        guard feedbackTimer == nil else { return }
+        feedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.flashAlpha = max(0, self.flashAlpha - 0.02)
+                let warningActive = self.warningUntil.map { Date() < $0 } ?? false
+                if !warningActive { self.warningUntil = nil }
+                self.needsDisplay = true
+                if self.flashAlpha == 0, !warningActive {
+                    self.feedbackTimer?.invalidate()
+                    self.feedbackTimer = nil
+                }
+            }
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        if flashAlpha > 0 {
+            NSColor.systemGreen.withAlphaComponent(flashAlpha).setFill()
+            bounds.fill()
+        }
         let outer = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
         NSColor.black.withAlphaComponent(0.55).setStroke()
         outer.lineWidth = 3
         outer.stroke()
         let inner = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
-        NSColor.white.setStroke()
+        let warning = warningUntil.map { Date() < $0 } ?? false
+        (warning ? NSColor.systemOrange : NSColor.white).setStroke()
         inner.lineWidth = 1.5
         inner.stroke()
     }
@@ -38,8 +80,14 @@ final class ScrollCaptureController {
     private let grabber = ScreenGrabber()
 
     private var borderPanel: ScrollPanel?
+    private var borderView: BorderView?
     private var controlPanel: ScrollPanel?
+    private var controlSurface: GlassSurfaceView?
     private var statusLabel: NSTextField?
+    private var previewView: NSImageView?
+    private var previewHeightConstraint: NSLayoutConstraint?
+    private var previewWidth: CGFloat = 200
+    private var panelBelowSelection = true
     private var keyMonitor: Any?
     private var timer: Timer?
     private var tickInFlight = false
@@ -81,6 +129,10 @@ final class ScrollCaptureController {
         controlPanel?.orderOut(nil)
         borderPanel = nil
         controlPanel = nil
+        borderView = nil
+        controlSurface = nil
+        previewView = nil
+        statusLabel = nil
     }
 
     func finish() {
@@ -111,12 +163,28 @@ final class ScrollCaptureController {
         border.isReleasedWhenClosed = false
         border.ignoresMouseEvents = true
         border.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        border.contentView = BorderView(frame: CGRect(origin: .zero, size: selection.insetBy(dx: -2, dy: -2).size))
+        let frame = BorderView(frame: CGRect(origin: .zero, size: selection.insetBy(dx: -2, dy: -2).size))
+        border.contentView = frame
+        borderView = frame
         border.orderFrontRegardless()
         borderPanel = border
 
         let surface = GlassSurfaceView(variant: .regular, cornerRadius: 14,
                                        isInteractive: true, withinWindowBlending: true)
+        controlSurface = surface
+        // Live preview of the stitched canvas: the only place the user can
+        // actually see which parts of the page are already captured.
+        previewWidth = min(max(selection.width, 140), 300)
+        let preview = NSImageView()
+        preview.imageScaling = .scaleProportionallyUpOrDown
+        preview.wantsLayer = true
+        preview.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.12).cgColor
+        preview.layer?.cornerRadius = 8
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        let height = preview.heightAnchor.constraint(equalToConstant: 36)
+        previewHeightConstraint = height
+        previewView = preview
+
         let label = NSTextField(labelWithString: "滚动长截图 · 滚动页面，往回滚可撤销多截部分，点完成结束")
         label.font = .systemFont(ofSize: 12.5, weight: .medium)
         label.textColor = .labelColor
@@ -125,23 +193,30 @@ final class ScrollCaptureController {
         finishButton.applyLiquidGlassStyle(active: true)
         let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancelAction))
         cancelButton.applyLiquidGlassStyle()
-        let stack = NSStackView(views: [label, finishButton, cancelButton])
-        stack.orientation = .horizontal
+        let controls = NSStackView(views: [label, finishButton, cancelButton])
+        controls.orientation = .horizontal
+        controls.spacing = 8
+        let stack = NSStackView(views: [preview, controls])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 8, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
         surface.contentContainer.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: surface.contentContainer.topAnchor),
             stack.leadingAnchor.constraint(equalTo: surface.contentContainer.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: surface.contentContainer.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: surface.contentContainer.bottomAnchor)
+            stack.bottomAnchor.constraint(equalTo: surface.contentContainer.bottomAnchor),
+            preview.widthAnchor.constraint(equalToConstant: previewWidth),
+            height
         ])
         surface.layoutSubtreeIfNeeded()
         let size = surface.fittingSize
+        panelBelowSelection = selection.minY - size.height - 10 >= displayFrame.minY + 8
         var origin = CGPoint(x: selection.midX - size.width / 2,
-                             y: selection.minY - size.height - 10)
-        if origin.y < displayFrame.minY + 8 { origin.y = selection.maxY + 10 }
+                             y: panelBelowSelection ? selection.minY - size.height - 10
+                                                    : selection.maxY + 10)
         origin.x = min(max(origin.x, displayFrame.minX + 8), displayFrame.maxX - size.width - 8)
         origin.y = min(origin.y, displayFrame.maxY - size.height - 8)
         let control = ScrollPanel(contentRect: CGRect(origin: origin, size: size),
@@ -176,6 +251,21 @@ final class ScrollCaptureController {
 
     @objc private func finishAction() { finish() }
     @objc private func cancelAction() { cancel() }
+
+    /// Re-fits the control panel after the preview's height changes, keeping
+    /// the edge nearest the selection where it was.
+    private func layoutControlPanel() {
+        guard let controlPanel, let controlSurface else { return }
+        controlSurface.layoutSubtreeIfNeeded()
+        let size = controlSurface.fittingSize
+        var origin = controlPanel.frame.origin
+        origin.x = selection.midX - size.width / 2
+        origin.y = panelBelowSelection ? selection.minY - size.height - 10
+                                       : selection.maxY + 10
+        origin.x = min(max(origin.x, displayFrame.minX + 8), displayFrame.maxX - size.width - 8)
+        origin.y = min(max(origin.y, displayFrame.minY + 8), displayFrame.maxY - size.height - 8)
+        controlPanel.setFrame(CGRect(origin: origin, size: size), display: true)
+    }
 
     // MARK: - Capture loop
 
@@ -215,12 +305,17 @@ final class ScrollCaptureController {
             canvasTop = 0
             lastFrameTop = 0
             self.lastGray = gray
-            updateStatus()
+            updateFeedback()
             return
         }
         guard frame.width == frameWidth, frame.height == frameHeight else { return }
         if ScrollStitcher.meanAbsoluteDifference(lastGray, gray) < 1.2 { return }
-        guard let dy = ScrollStitcher.verticalOffset(previous: lastGray, current: gray), dy != 0 else { return }
+        guard let dy = ScrollStitcher.verticalOffset(previous: lastGray, current: gray) else {
+            // The page moved but no overlap matched — a slice may be missing.
+            borderView?.showWarning()
+            return
+        }
+        guard dy != 0 else { return }
 
         let newTop = lastFrameTop + dy
         // Scrolling back up undoes overshoot: everything captured below the
@@ -258,12 +353,39 @@ final class ScrollCaptureController {
         canvasTop = newCanvasTop
         lastFrameTop = newTop
         self.lastGray = gray
-        updateStatus()
+        updateFeedback()
     }
 
-    private func updateStatus() {
+    /// Everything the user can see about capture progress lives here: the
+    /// height readout, the live preview of the stitched canvas, and the
+    /// border flash confirming the frame landed.
+    private func updateFeedback() {
         guard let canvasImage else { return }
         statusLabel?.stringValue = "滚动长截图 · 已捕获 \(canvasImage.height) px · 往回滚可撤销，点完成结束"
+        borderView?.flashCaptured()
+        guard let previewView, let thumbnail = Self.thumbnail(from: canvasImage) else { return }
+        previewView.image = NSImage(cgImage: thumbnail,
+                                    size: NSSize(width: thumbnail.width, height: thumbnail.height))
+        let displayHeight = min(150, max(30, previewWidth * CGFloat(thumbnail.height) / CGFloat(thumbnail.width)))
+        if let constraint = previewHeightConstraint, abs(constraint.constant - displayHeight) > 2 {
+            constraint.constant = displayHeight
+            layoutControlPanel()
+        }
+    }
+
+    /// Bounded downscale of the stitched canvas for the control-bar preview;
+    /// proportional, at most 300×600 px regardless of canvas size.
+    private static func thumbnail(from image: CGImage) -> CGImage? {
+        let scale = min(300 / CGFloat(image.width), 600 / CGFloat(image.height), 1)
+        let width = max(1, Int(CGFloat(image.width) * scale))
+        let height = max(1, Int(CGFloat(image.height) * scale))
+        guard let context = CGContext(data: nil, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     /// Grayscale copy at full height (so detected offsets are exact pixel rows)
