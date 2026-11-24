@@ -40,12 +40,18 @@ public final class ScreenGrabber {
             }
             let filter = SCContentFilter(display: display, excludingApplications: ownApplications, exceptingWindows: [])
             let configuration = SCStreamConfiguration()
-            configuration.width = CGDisplayPixelsWide(display.displayID)
-            configuration.height = CGDisplayPixelsHigh(display.displayID)
+            // A Retina display reports its *point* size through CGDisplayPixelsWide.
+            // Asking ScreenCaptureKit for that count halves the resolution on every
+            // 2x screen, so the overlay preview and the cropped result are both
+            // upscaled and look blurry. Capture at real backing pixels instead.
+            let scale = max(screen.backingScaleFactor, 1)
+            configuration.width = Int((CGFloat(display.width) * scale).rounded())
+            configuration.height = Int((CGFloat(display.height) * scale).rounded())
             configuration.showsCursor = false
             configuration.capturesAudio = false
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             try Task.checkCancellation()
+            Diagnostics.log("grabber: display=\(display.displayID) points=\(display.width)x\(display.height) scale=\(scale) captured=\(image.width)x\(image.height)")
             frames.append(DisplayFrame(frame: screen.frame, image: image))
         }
         guard screens.map(\.frame) == NSScreen.screens.map(\.frame) else {

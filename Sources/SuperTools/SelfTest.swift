@@ -38,6 +38,19 @@ final class SelfTest: NSObject, NSApplicationDelegate {
                 let frames = try await grabber.capture()
                 for frame in frames {
                     Diagnostics.log("capture frame=\(frame.frame) px=\(frame.image.width)x\(frame.image.height)")
+                    // A fully black capture means the permission is granted but the
+                    // stream is empty; check the mean luminance to tell that apart
+                    // from a merely un-drawn overlay.
+                    let width = 32, height = 32
+                    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+                    if let ctx = CGContext(data: &pixels, width: width, height: height,
+                                           bitsPerComponent: 8, bytesPerRow: width * 4,
+                                           space: CGColorSpaceCreateDeviceRGB(),
+                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                        ctx.draw(frame.image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                        let sum = stride(from: 0, to: pixels.count, by: 4).reduce(0) { $0 + Int(pixels[$1]) }
+                        Diagnostics.log("capture mean red = \(sum / (width * height)) / 255")
+                    }
                 }
                 Diagnostics.log("capture OK frames=\(frames.count)")
             } catch {
@@ -57,6 +70,16 @@ final class SelfTest: NSObject, NSApplicationDelegate {
             }
             Diagnostics.log("visible windows: \(visible.isEmpty ? "none" : visible.joined(separator: " | "))")
             overlay.cancel()
+
+            // Auto-paste diagnostics: the copy must always happen, the keystroke is
+            // the only part that depends on the Accessibility grant.
+            Diagnostics.log("paster: AXIsProcessTrusted=\(PasteSynthesizer.isTrusted)")
+            if PasteSynthesizer.isTrusted {
+                Diagnostics.log("paster: outcome=\(PasteSynthesizer.paste(into: nil)) (no-op target)")
+            } else {
+                Diagnostics.log("paster: would report permissionRequired, settings fall back to copy-only")
+            }
+
             Diagnostics.log("=== self-test end ===")
             NSApp.stop(nil)
             NSApp.terminate(nil)

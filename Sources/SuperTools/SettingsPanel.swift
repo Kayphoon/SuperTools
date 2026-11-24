@@ -6,6 +6,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private enum RecordingTarget {
         case capture
         case history
+        case imageKey
+        case textKey
     }
 
     private var settings: NativeSettings
@@ -16,13 +18,24 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private let controlsGroup = GlassGroupView(spacing: 10)
     private let captureBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
     private let historyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
+    private let imageKeyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
+    private let textKeyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
     private let captureValueLabel = NSTextField(labelWithString: "")
     private let historyValueLabel = NSTextField(labelWithString: "")
+    private let imageKeyValueLabel = NSTextField(labelWithString: "")
+    private let textKeyValueLabel = NSTextField(labelWithString: "")
     private let recordCaptureButton = NSButton(title: "录制快捷键", target: nil, action: nil)
     private let recordHistoryButton = NSButton(title: "录制快捷键", target: nil, action: nil)
+    private let recordImageKeyButton = NSButton(title: "录制按键", target: nil, action: nil)
+    private let recordTextKeyButton = NSButton(title: "录制按键", target: nil, action: nil)
     private let restoreDefaultButton = NSButton(title: "恢复默认", target: nil, action: nil)
     private let persistenceCheckbox = NSButton(
         checkboxWithTitle: "保存图片历史到磁盘缓存（最多 25 张 / 50 MB）",
+        target: nil,
+        action: nil
+    )
+    private let pasteCheckbox = NSButton(
+        checkboxWithTitle: "选中历史后直接粘贴到原窗口（需要辅助功能权限）",
         target: nil,
         action: nil
     )
@@ -33,7 +46,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
         let panel = NSPanel(
-            contentRect: CGRect(x: 0, y: 0, width: 480, height: 248),
+            contentRect: CGRect(x: 0, y: 0, width: 500, height: 388),
             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -103,6 +116,50 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         historyRow.spacing = 10
         historyRow.alignment = .centerY
 
+        // Action keys: read only while the capture overlay owns the keyboard, so a
+        // bare Return / Space is legitimate here (unlike a global hotkey).
+        let imageKeyTitleLabel = NSTextField(labelWithString: "截图后 · 复制图片")
+        imageKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        imageKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+        imageKeyValueLabel.alignment = .center
+        imageKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        imageKeyBadge.contentContainer.addSubview(imageKeyValueLabel)
+        NSLayoutConstraint.activate([
+            imageKeyValueLabel.topAnchor.constraint(equalTo: imageKeyBadge.contentContainer.topAnchor, constant: 4),
+            imageKeyValueLabel.leadingAnchor.constraint(equalTo: imageKeyBadge.contentContainer.leadingAnchor, constant: 10),
+            imageKeyValueLabel.trailingAnchor.constraint(equalTo: imageKeyBadge.contentContainer.trailingAnchor, constant: -10),
+            imageKeyValueLabel.bottomAnchor.constraint(equalTo: imageKeyBadge.contentContainer.bottomAnchor, constant: -4),
+            imageKeyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
+        ])
+        recordImageKeyButton.target = self
+        recordImageKeyButton.action = #selector(recordImageKey)
+        recordImageKeyButton.applyLiquidGlassStyle()
+        let imageKeyRow = NSStackView(views: [imageKeyTitleLabel, NSView(), imageKeyBadge, recordImageKeyButton])
+        imageKeyRow.orientation = .horizontal
+        imageKeyRow.spacing = 10
+        imageKeyRow.alignment = .centerY
+
+        let textKeyTitleLabel = NSTextField(labelWithString: "截图后 · 识别文字")
+        textKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        textKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+        textKeyValueLabel.alignment = .center
+        textKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        textKeyBadge.contentContainer.addSubview(textKeyValueLabel)
+        NSLayoutConstraint.activate([
+            textKeyValueLabel.topAnchor.constraint(equalTo: textKeyBadge.contentContainer.topAnchor, constant: 4),
+            textKeyValueLabel.leadingAnchor.constraint(equalTo: textKeyBadge.contentContainer.leadingAnchor, constant: 10),
+            textKeyValueLabel.trailingAnchor.constraint(equalTo: textKeyBadge.contentContainer.trailingAnchor, constant: -10),
+            textKeyValueLabel.bottomAnchor.constraint(equalTo: textKeyBadge.contentContainer.bottomAnchor, constant: -4),
+            textKeyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
+        ])
+        recordTextKeyButton.target = self
+        recordTextKeyButton.action = #selector(recordTextKey)
+        recordTextKeyButton.applyLiquidGlassStyle()
+        let textKeyRow = NSStackView(views: [textKeyTitleLabel, NSView(), textKeyBadge, recordTextKeyButton])
+        textKeyRow.orientation = .horizontal
+        textKeyRow.spacing = 10
+        textKeyRow.alignment = .centerY
+
         restoreDefaultButton.target = self
         restoreDefaultButton.action = #selector(restoreDefaults)
         restoreDefaultButton.applyLiquidGlassStyle()
@@ -116,16 +173,26 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         persistenceCheckbox.target = self
         persistenceCheckbox.action = #selector(togglePersistence)
 
+        pasteCheckbox.target = self
+        pasteCheckbox.action = #selector(togglePasteOnSelect)
+
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.maximumNumberOfLines = 2
+
+        let divider2 = NSBox()
+        divider2.boxType = .separator
 
         let stack = NSStackView(views: [
             captureRow,
             historyRow,
             restoreRow,
             divider,
+            imageKeyRow,
+            textKeyRow,
+            divider2,
             persistenceCheckbox,
+            pasteCheckbox,
             statusLabel
         ])
         stack.orientation = .vertical
@@ -150,9 +217,14 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
             historyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             restoreRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            divider2.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            imageKeyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            textKeyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             recordCaptureButton.widthAnchor.constraint(equalToConstant: 110),
-            recordHistoryButton.widthAnchor.constraint(equalToConstant: 110)
+            recordHistoryButton.widthAnchor.constraint(equalToConstant: 110),
+            recordImageKeyButton.widthAnchor.constraint(equalToConstant: 110),
+            recordTextKeyButton.widthAnchor.constraint(equalToConstant: 110)
         ])
     }
 
@@ -178,11 +250,18 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private func refreshUI() {
         captureValueLabel.stringValue = settings.captureShortcut.displayString
         historyValueLabel.stringValue = settings.historyShortcut.displayString
+        imageKeyValueLabel.stringValue = settings.imageKey.displayString
+        textKeyValueLabel.stringValue = settings.textKey.displayString
         recordCaptureButton.title = recordingTarget == .capture ? "按下快捷键…" : "录制快捷键"
         recordHistoryButton.title = recordingTarget == .history ? "按下快捷键…" : "录制快捷键"
+        recordImageKeyButton.title = recordingTarget == .imageKey ? "按下按键…" : "录制按键"
+        recordTextKeyButton.title = recordingTarget == .textKey ? "按下按键…" : "录制按键"
         recordCaptureButton.applyLiquidGlassStyle(active: recordingTarget == .capture)
         recordHistoryButton.applyLiquidGlassStyle(active: recordingTarget == .history)
+        recordImageKeyButton.applyLiquidGlassStyle(active: recordingTarget == .imageKey)
+        recordTextKeyButton.applyLiquidGlassStyle(active: recordingTarget == .textKey)
         persistenceCheckbox.state = settings.imagePersistenceEnabled ? .on : .off
+        pasteCheckbox.state = settings.pasteOnSelect ? .on : .off
     }
 
     @objc private func recordCaptureShortcut() {
@@ -195,6 +274,14 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func togglePasteOnSelect() {
+        stopRecording()
+        var updated = settings
+        updated.pasteOnSelect = (pasteCheckbox.state == .on)
+        applyUpdatedSettings(updated, message: updated.pasteOnSelect ? "选中历史后将直接粘贴" : "")
+    }
+
+
     @objc private func recordHistoryShortcut() {
         if recordingTarget == .history {
             stopRecording()
@@ -205,12 +292,34 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func recordImageKey() {
+        if recordingTarget == .imageKey {
+            stopRecording()
+            statusLabel.stringValue = ""
+            refreshUI()
+        } else {
+            startRecording(.imageKey)
+        }
+    }
+
+    @objc private func recordTextKey() {
+        if recordingTarget == .textKey {
+            stopRecording()
+            statusLabel.stringValue = ""
+            refreshUI()
+        } else {
+            startRecording(.textKey)
+        }
+    }
+
     @objc private func restoreDefaults() {
         stopRecording()
         var updated = settings
         updated.captureShortcut = .capture
         updated.historyShortcut = .history
-        applyUpdatedSettings(updated, message: "已恢复默认快捷键")
+        updated.imageKey = .imageDefault
+        updated.textKey = .textDefault
+        applyUpdatedSettings(updated, message: "已恢复默认按键")
     }
 
     @objc private func togglePersistence() {
@@ -240,7 +349,12 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         recordingTarget = target
         refreshUI()
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.stringValue = "请按下包含 Command / Option / Control 的组合键（Esc 取消）"
+        switch target {
+        case .capture, .history:
+            statusLabel.stringValue = "请按下包含 Command / Option / Control 的组合键（Esc 取消）"
+        case .imageKey, .textKey:
+            statusLabel.stringValue = "请按下截图后要用的确认键，可用回车、空格等普通键（Esc 取消）"
+        }
         window?.makeFirstResponder(nil)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
@@ -252,14 +366,28 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
                     self.refreshUI()
                     return true
                 }
-                let shortcut = NativeShortcut(keyCode: Int(event.keyCode), modifierFlags: event.modifierFlags)
                 var updated = self.settings
-                switch activeTarget {
-                case .capture: updated.captureShortcut = shortcut
-                case .history: updated.historyShortcut = shortcut
+                do {
+                    switch activeTarget {
+                    case .capture, .history:
+                        let shortcut = NativeShortcut(keyCode: Int(event.keyCode),
+                                                      modifierFlags: event.modifierFlags)
+                        try shortcut.validate()
+                        if activeTarget == .capture { updated.captureShortcut = shortcut }
+                        else { updated.historyShortcut = shortcut }
+                    case .imageKey, .textKey:
+                        let key = ActionKey(keyCode: Int(event.keyCode),
+                                            modifierFlags: event.modifierFlags)
+                        try key.validate()
+                        if activeTarget == .imageKey { updated.imageKey = key }
+                        else { updated.textKey = key }
+                    }
+                    self.stopRecording()
+                    self.applyUpdatedSettings(updated, message: "按键已更新")
+                } catch {
+                    self.statusLabel.textColor = .systemRed
+                    self.statusLabel.stringValue = error.localizedDescription
                 }
-                self.stopRecording()
-                self.applyUpdatedSettings(updated, message: "快捷键已更新")
                 return true
             }
             return consumed ? nil : event

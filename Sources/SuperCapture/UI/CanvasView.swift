@@ -30,6 +30,10 @@ final class CanvasView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        // Keep the backing layer at native device scale so the Retina frame is
+        // rasterised 1:1 instead of being rendered at 1x and upscaled.
+        layer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
 
         toolbar.orientation = .horizontal
         toolbar.spacing = 6
@@ -44,8 +48,8 @@ final class CanvasView: NSView {
             ("线宽", "[ / ] · 2 / 4 / 6 pt", #selector(cycleWidth), nil),
             ("撤销", "⌘Z", #selector(undoAnnotation), nil),
             ("长截图", "L · 滚动长截图：框选后滚动页面自动拼接", #selector(scrollCapture), nil),
-            ("文字", "⇧Enter 或 ⌘C · 只复制文字", #selector(copyText), nil),
-            ("复制", "Enter 或双击 · 复制图片", #selector(copyImage), nil),
+            ("文字", "只识别文字并复制", #selector(copyText), nil),
+            ("复制", "复制选区图片", #selector(copyImage), nil),
             ("取消", "Esc", #selector(cancel), nil)
         ]
 
@@ -90,10 +94,33 @@ final class CanvasView: NSView {
         ])
         addSubview(instructionSurface)
 
-        setAccessibilityLabel("截图选区。拖动框选，箭头键微调，R 矩形，M 马赛克，Enter 复制，Shift Enter 识别文字，Escape 取消。")
+        setAccessibilityLabel("截图选区。拖动框选，箭头键微调，R 矩形，M 马赛克，回车复制图片，空格识别文字，Escape 取消。")
     }
 
     required init?(coder: NSCoder) { nil }
+
+    // A display can have a different scale than the main screen (or the window can
+    // move), so re-sync the layer scale whenever the canvas is attached to one.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        syncContentsScale()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        syncContentsScale()
+    }
+
+    private func syncContentsScale() {
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.screens.first(where: { $0.frame == displayFrame })?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        layer?.contentsScale = scale
+        toolbarSurface.layer?.contentsScale = scale
+        instructionSurface.layer?.contentsScale = scale
+        needsDisplay = true
+    }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
 
@@ -143,7 +170,16 @@ final class CanvasView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        if let image { context.draw(image, in: bounds) }
+        if let image {
+            // The overlay window is sized in points, but the captured frame is in
+            // backing pixels. Draw it 1:1 into the pixel-sized rect so AppKit does
+            // not downsample to points and then upsample back, which is what made
+            // the preview (and any selection made from it) look soft.
+            context.saveGState()
+            context.interpolationQuality = .high
+            context.draw(image, in: bounds)
+            context.restoreGState()
+        }
         guard let coordinator else { return }
         let selected = local(coordinator.selection)
         let mask = NSBezierPath(rect: bounds)
@@ -206,13 +242,58 @@ final class CanvasView: NSView {
     override func keyDown(with event: NSEvent) {
         guard let coordinator else { return }
         let command = event.modifierFlags.contains(.command)
+
+        // Escape always cancels, before any user-configured action key is
+        // consulted, so a misconfigured key can never trap the overlay.
+        if event.keyCode == 53 {
+            coordinator.cancel()
+            return
+        }
+
+        // Arrow keys nudge the selection; Shift fast-moves but does not change the
+        // action mapping, so these stay out of the configurable path too.
         switch event.keyCode {
-        case 53: coordinator.cancel()
-        case 36, 76: coordinator.confirm(textOnly: event.modifierFlags.contains(.shift))
-        case 123: coordinator.nudge(dx: -1, dy: 0, fast: event.modifierFlags.contains(.shift))
-        case 124: coordinator.nudge(dx: 1, dy: 0, fast: event.modifierFlags.contains(.shift))
-        case 125: coordinator.nudge(dx: 0, dy: -1, fast: event.modifierFlags.contains(.shift))
-        case 126: coordinator.nudge(dx: 0, dy: 1, fast: event.modifierFlags.contains(.shift))
+        case 123: coordinator.nudge(dx: -1, dy: 0, fast: event.modifierFlags.contains(.shift)); return
+        case 124: coordinator.nudge(dx: 1, dy: 0, fast: event.modifierFlags.contains(.shift)); return
+        case 125: coordinator.nudge(dx: 0, dy: -1, fast: event.modifierFlags.contains(.shift)); return
+        case 126: coordinator.nudge(dx: 0, dy: 1, fast: event.modifierFlags.contains(.shift)); return
+        default: break
+        }
+
+        // User-configured confirmation keys: one copies the image, the other runs
+        // OCR and copies the recognised text. Shift+Enter / Cmd+C stay as always-
+        // available shortcuts for the text action.
+        if coordinator.textKey.matches(event) || (event.keyCode == 36 && event.modifierFlags.contains(.shift)) {
+            coordinator.confirm(textOnly: true)
+            coordinator.refresh()
+            return
+        }
+        if coordinator.imageKey.matches(event) {
+            coordinator.confirm(textOnly: false)
+            coordinator.refresh()
+            return
+        }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "c" where command:
+            coordinator.confirm(textOnly: true)
+        case "z" where command:
+            coordinator.undo()
+        case "r" where !command:
+            coordinator.tool = .rectangle
+        case "m" where !command:
+            coordinator.tool = .mosaic
+        case "v" where !command:
+            coordinator.tool = .selection
+        case "1" where !command:
+            coordinator.colorIndex = 0
+        case "2" where !command:
+            coordinator.colorIndex = 1
+        case "3" where !command:
+            coordinator.colorIndex = 2
+        case "[" where !command:
+            coordinator.widthIndex = max(0, coordinator.widthIndex - 1)
+        case "]" where !command:
+            coordinator.widthIndex = min(2, coordinator.widthIndex + 1)
         default:
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "c" where command: coordinator.confirm(textOnly: true)

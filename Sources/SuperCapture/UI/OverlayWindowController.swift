@@ -30,6 +30,10 @@ public final class OverlayWindowController {
     var tool: Tool = .selection
     var colorIndex = 0
     var widthIndex = 0
+    /// Confirmation keys, configured by the host and read only while the overlay
+    /// owns the keyboard. Defaults: Return copies the image, Space copies OCR text.
+    public var imageKey = ActionKey.imageDefault
+    public var textKey = ActionKey.textDefault
     var isDragging: Bool { gesture != nil }
     var visibleAnnotations: [CaptureAnnotation] { annotations + (pendingAnnotation.map { [$0] } ?? []) }
     var statusText: String {
@@ -42,7 +46,7 @@ public final class OverlayWindowController {
         }
         let colorName = ["红", "黄", "蓝"][colorIndex]
         return selection.isNull ? "拖动框选 · Esc 取消" :
-            "\(Int(selection.width)) × \(Int(selection.height)) · \(toolName) · \(colorName) · \(Int(widths[widthIndex])) pt · Enter 复制 · ⇧Enter 文字 · L 长截图 · Esc 取消"
+            "\(Int(selection.width)) × \(Int(selection.height)) · \(toolName) · \(colorName) · \(Int(widths[widthIndex])) pt · \(imageKey.displayString) 复制 · \(textKey.displayString) 取字 · L 长截图 · Esc 取消"
     }
 
     public var onCapture: ((CGImage, Bool) -> Void)?
@@ -54,14 +58,24 @@ public final class OverlayWindowController {
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.cancel()
-                self?.preparePanels()
+                guard let self else { return }
+                // This notification fires for changes that do not alter the capture
+                // geometry (the Dock appearing when the activation policy changes is one
+                // of them). Rebuilding the panels then would tear down a live overlay.
+                let current = NSScreen.screens.map(\.frame)
+                let prepared = self.panels.map(\.frame)
+                Diagnostics.log("overlay: screen parameters changed, prepared=\(prepared.count) current=\(current.count) same=\(prepared == current)")
+                guard prepared != current else { return }
+                self.cancel()
+                self.preparePanels()
             }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
-                guard let self, self.isPresented, event.keyCode != 48,
-                      self.panels.contains(where: { $0 === event.window }),
+                guard let self, self.isPresented else { return false }
+                let isOurPanel = event.window.map { window in self.panels.contains { $0 === window } } ?? false
+                Diagnostics.log("overlay: keyDown \(event.keyCode) window=OURS:\(isOurPanel) active=\(NSApp.isActive)")
+                guard event.keyCode != 48, isOurPanel,
                       let canvas = event.window?.contentView as? CanvasView else { return false }
                 canvas.keyDown(with: event)
                 return true
@@ -71,13 +85,18 @@ public final class OverlayWindowController {
     }
 
     public func present() {
-        guard captureTask == nil, !isPresented else { return }
+        Diagnostics.log("overlay: present() captureTaskNil=\(captureTask == nil) isPresented=\(isPresented) panels=\(panels.count)")
+        guard captureTask == nil, !isPresented else {
+            Diagnostics.log("overlay: present() ignored — already presenting")
+            return
+        }
         guard CGPreflightScreenCaptureAccess() else {
             Diagnostics.log("overlay: no screen recording permission — requesting")
             CGRequestScreenCaptureAccess()
             onError?(CaptureError.permissionRequired)
             return
         }
+        Diagnostics.log("overlay: permission OK, showing \(panels.count) panel(s)")
         generation += 1
         let token = generation
         selection = .null
@@ -88,19 +107,41 @@ public final class OverlayWindowController {
         // The filter excludes this helper, so the overlays never enter the image.
         for panel in panels {
             (panel.contentView as? CanvasView)?.refresh()
+            // Re-assert the level: a window that was ordered out and back can come
+            // back at the default floating level, hidden behind full-screen apps.
+            panel.level = .screenSaver
             panel.orderFrontRegardless()
         }
+        // A `.nonactivatingPanel` cannot become the key window while the hosting app is
+        // `.accessory`, so the overlay shows but every keystroke keeps going to the app
+        // the user came from. Promote the app to `.regular` while the overlay is up
+        // (`.accessory` is restored in `cancel()`), then make the panel key.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         let mouse = NSEvent.mouseLocation
         let activePanel = panels.first(where: { $0.frame.contains(mouse) }) ?? panels.first
-        activePanel?.makeKey()
+        activePanel?.makeKeyAndOrderFront(nil)
         activePanel?.makeFirstResponder(activePanel?.contentView)
+        // Activation lands a few hundred milliseconds later and clears the key window
+        // on the way, so the panel has to be re-keyed until it sticks.
+        settleKeyWindow(activePanel)
+        DispatchQueue.main.async {
+            Diagnostics.log("overlay: +0ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            Diagnostics.log("overlay: +400ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true)")
+        }
         captureTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let images = try await grabber.capture()
                 try Task.checkCancellation()
-                guard token == generation else { return }
+                guard token == generation else {
+                    Diagnostics.log("overlay: capture superseded (token \(token) != \(self.generation))")
+                    return
+                }
                 frames = images
+                Diagnostics.log("overlay: captured \(images.count) frame(s)")
                 for (panel, display) in zip(panels, images) {
                     guard let canvas = panel.contentView as? CanvasView else { continue }
                     canvas.displayFrame = display.frame
@@ -108,9 +149,11 @@ public final class OverlayWindowController {
                     panel.setFrame(display.frame, display: false)
                     canvas.refresh()
                 }
+                Diagnostics.log("overlay: panels updated, visible=\(panels.filter(\.isVisible).count)")
             } catch is CancellationError {
-                // A screen change or explicit cancel invalidates the in-flight capture.
+                Diagnostics.log("overlay: capture cancelled")
             } catch {
+                Diagnostics.log("overlay: capture failed — \(error.localizedDescription)")
                 if token == generation {
                     cancel()
                     onError?(error)
@@ -120,19 +163,46 @@ public final class OverlayWindowController {
         }
     }
 
+    /// Re-assert key-window status until activation has settled.
+    ///
+    /// Promoting the app to `.regular` activates it asynchronously, and that
+    /// activation clears the key window, so a single `makeKey` right after
+    /// `activate` is always overwritten a moment later. Retry for as long as the
+    /// overlay is up and the panel still is not the key window.
+    private func settleKeyWindow(_ panel: CapturePanel?, attempt: Int = 0) {
+        guard isPresented, let panel else { return }
+        // Activation finishes asynchronously and clears whichever key window was set
+        // before it, so a single successful sample proves nothing. Keep re-asserting
+        // for ~2 s instead of stopping at the first `isKeyWindow` that happens to be true.
+        if !panel.isKeyWindow {
+            panel.makeKey()
+            panel.makeFirstResponder(panel.contentView)
+        }
+        guard attempt < 20 else {
+            Diagnostics.log("overlay: settleKey end active=\(NSApp.isActive) key=\(panel.isKeyWindow)")
+            return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.settleKeyWindow(panel, attempt: attempt + 1)
+        }
+    }
+
     private func preparePanels() {
         for panel in panels { panel.close() }
         panels = NSScreen.screens.map { screen in
-            let panel = CapturePanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+            // A plain borderless panel, not `.nonactivatingPanel`: the non-activating
+            // style refuses to become the key window, so the overlay would show but
+            // swallow no keystrokes (Return/Space/Esc all silently ignored).
+            let panel = CapturePanel(contentRect: screen.frame, styleMask: [.borderless],
                                      backing: .buffered, defer: false)
-            panel.level = .screenSaver
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
-            panel.isFloatingPanel = true
             panel.isReleasedWhenClosed = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            // `isFloatingPanel` forces the window back to .floating, so the level
+            // must be assigned after it (and never through the property at all).
+            panel.level = .screenSaver
             let view = CanvasView(frame: CGRect(origin: .zero, size: screen.frame.size))
             view.autoresizingMask = [.width, .height]
             view.displayFrame = screen.frame
@@ -272,6 +342,11 @@ public final class OverlayWindowController {
         pendingAnnotation = nil
         gesture = nil
         selection = .null
+        // Back to a menu bar app once the capture finishes so no Dock icon or
+        // app-switcher entry lingers after the overlay closes.
+        if NSApp.activationPolicy() != .accessory {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     public func stop() {

@@ -1,5 +1,7 @@
 import AppKit
 import Carbon
+import SuperCapture
+import Carbon
 
 struct NativeShortcut: Codable, Hashable {
     let keyCode: Int
@@ -94,11 +96,51 @@ struct NativeSettings: Codable, Equatable {
     var captureShortcut: NativeShortcut = .capture
     var historyShortcut: NativeShortcut = .history
     var imagePersistenceEnabled = false
+    var imageKey: ActionKey = .imageDefault
+    var textKey: ActionKey = .textDefault
+    /// Paste the selected history entry straight into the app the panel was opened
+    /// from. Needs Accessibility; off by default so a fresh install asks nothing.
+    var pasteOnSelect = false
 
     func validate() throws {
         try captureShortcut.validate()
         try historyShortcut.validate()
+        try imageKey.validate()
+        try textKey.validate()
         guard captureShortcut != historyShortcut else { throw NativeSettingsError.duplicateShortcuts }
+        guard imageKey != textKey else { throw NativeSettingsError.duplicateActionKeys }
+    }
+
+    // New fields must stay optional so a settings.json written by an older build
+    // still loads instead of throwing away the user's hotkeys.
+    private enum CodingKeys: String, CodingKey {
+        case captureShortcut, historyShortcut, imagePersistenceEnabled, imageKey, textKey, pasteOnSelect
+    }
+
+    init() {}
+
+    init(captureShortcut: NativeShortcut = .capture,
+         historyShortcut: NativeShortcut = .history,
+         imagePersistenceEnabled: Bool = false,
+         imageKey: ActionKey = .imageDefault,
+         textKey: ActionKey = .textDefault,
+         pasteOnSelect: Bool = false) {
+        self.captureShortcut = captureShortcut
+        self.historyShortcut = historyShortcut
+        self.imagePersistenceEnabled = imagePersistenceEnabled
+        self.imageKey = imageKey
+        self.textKey = textKey
+        self.pasteOnSelect = pasteOnSelect
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        captureShortcut = try container.decodeIfPresent(NativeShortcut.self, forKey: .captureShortcut) ?? .capture
+        historyShortcut = try container.decodeIfPresent(NativeShortcut.self, forKey: .historyShortcut) ?? .history
+        imagePersistenceEnabled = try container.decodeIfPresent(Bool.self, forKey: .imagePersistenceEnabled) ?? false
+        imageKey = try container.decodeIfPresent(ActionKey.self, forKey: .imageKey) ?? .imageDefault
+        textKey = try container.decodeIfPresent(ActionKey.self, forKey: .textKey) ?? .textDefault
+        pasteOnSelect = try container.decodeIfPresent(Bool.self, forKey: .pasteOnSelect) ?? false
     }
 }
 
@@ -170,13 +212,14 @@ struct NativeResponse: Encodable {
 }
 
 enum NativeSettingsError: LocalizedError {
-    case invalidRequest, invalidShortcut, duplicateShortcuts, lineTooLong, unavailable
+    case invalidRequest, invalidShortcut, duplicateShortcuts, duplicateActionKeys, lineTooLong, unavailable
 
     var errorDescription: String? {
         switch self {
         case .invalidRequest: return "Invalid native settings request; use a positive integer id and a supported action."
         case .invalidShortcut: return "Use a key code from 0 through 127 with Command, Option or Control; only Command, Shift, Option and Control are supported."
         case .duplicateShortcuts: return "Capture and clipboard history need different shortcuts."
+        case .duplicateActionKeys: return "「复制图片」和「识别文字」不能是同一个键。"
         case .lineTooLong: return "Native settings request exceeds the 8192-byte line limit."
         case .unavailable: return "Native clipboard store is unavailable."
         }

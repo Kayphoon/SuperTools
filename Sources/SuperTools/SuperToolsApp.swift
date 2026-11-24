@@ -74,10 +74,14 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             let overlay = OverlayWindowController()
             overlay.onCapture = { [weak self] image, textOnly in self?.captured(image, textOnly: textOnly) }
             overlay.onError = { [weak self] error in self?.show(error) }
+            overlay.imageKey = settings.imageKey
+            overlay.textKey = settings.textKey
             self.overlay = overlay
             let history = HistoryPanel(store: store)
             history.onError = { [weak self] error in self?.show(error) }
             history.onCopied = { [weak self] kind in self?.announce(kind == .image ? "图片已复制" : "已复制") }
+            history.pasteOnSelect = settings.pasteOnSelect
+            history.onAutoPaste = { [weak self] target in self?.autoPaste(into: target) }
             self.history = history
             let settingsPanel = SettingsPanel(settings: settings)
             settingsPanel.onApply = { [weak self] updated in
@@ -133,7 +137,16 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         }
         settings = configuration
         settings.imagePersistenceEnabled = store.imagePersistenceEnabled
+        overlay?.imageKey = settings.imageKey
+        overlay?.textKey = settings.textKey
+        history?.pasteOnSelect = settings.pasteOnSelect
         try settingsStore?.save(settings)
+        // Turning auto-paste on is the moment to ask: the user just expressed intent,
+        // and the prompt is what puts the app into the Accessibility list at all.
+        if settings.pasteOnSelect, !PasteSynthesizer.isTrusted {
+            PasteSynthesizer.requestPermission()
+            PasteSynthesizer.openAccessibilitySettings()
+        }
         updateMenu()
         settingsPanel?.update(settings: settings)
         history?.reload()
@@ -304,7 +317,25 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showHistory() {
         overlay?.cancel()
+        // Checked before the panel takes focus, so the prompt lands on a window that
+        // is actually frontmost; the panel still opens either way.
+        if settings.pasteOnSelect, !PasteSynthesizer.isTrusted {
+            PasteSynthesizer.requestPermission()
+        }
         history?.present()
+    }
+
+    /// Shared by the history panel's auto-paste and any future caller.
+    private func autoPaste(into target: NSRunningApplication?) {
+        switch PasteSynthesizer.paste(into: target) {
+        case .pasted:
+            Diagnostics.log("paster: done")
+        case .permissionRequired:
+            announce("已复制。开启「辅助功能」权限后可自动粘贴，正在打开设置…")
+            PasteSynthesizer.openAccessibilitySettings()
+        case .failed:
+            show(PasteSynthesizerError.failed)
+        }
     }
 
     @objc private func showSettings() {

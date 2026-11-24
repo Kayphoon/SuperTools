@@ -85,8 +85,21 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "==> Signing $APP_DIR (ad-hoc)..."
-codesign --force --deep --sign - "$APP_DIR"
+# Prefer a stable local identity: an ad-hoc signature gets a fresh cdhash on every
+# rebuild, which silently invalidates the user's Screen Recording grant and makes
+# the capture hotkey look broken. Set SUPERTOOLS_SIGN_IDENTITY to override.
+SIGN_IDENTITY="${SUPERTOOLS_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(SuperTools[^"]*\)".*/\1/p' | head -1)"
+fi
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    SIGN_IDENTITY="-"
+    echo "==> Signing $APP_DIR (ad-hoc; Screen Recording grant will not survive rebuilds)"
+else
+    echo "==> Signing $APP_DIR (identity: $SIGN_IDENTITY)"
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
 if [[ "$ZIP" == "true" ]]; then
