@@ -12,7 +12,7 @@
 | `Sources/SuperCapture/UI/` | 非激活多屏截图浮层（`OverlayWindowController`、`CanvasView`）与手动滚动长截图会话（`ScrollCaptureController`，拼接匹配在 `Core/ScrollStitcher.swift`） |
 | `Sources/SuperClipboard/Monitor/` | 250 ms `changeCount` 剪贴板轮询与敏感类型过滤（`PasteboardMonitor`） |
 | `Sources/SuperClipboard/Storage/` | 内存 LRU 历史仓库（`ClipboardStore`）与有界图片磁盘缓存（`ImageDiskCache`） |
-| `Sources/SuperTools/` | 菜单栏宿主（`SuperToolsApp`）、Carbon 全局热键（`GlobalHotKeys`）、历史面板（`HistoryPanel`）、偏好设置面板（`SettingsPanel`）与配置持久化（`NativeSettings` / `SettingsStore`） |
+| `Sources/SuperTools/` | 菜单栏宿主（`SuperToolsApp`）、Carbon 全局热键（`GlobalHotKeys`）、历史面板（`HistoryPanel`）、设置窗口（`SettingsPanel`）与配置持久化（`NativeSettings` / `SettingsStore`） |
 | `Tests/SuperCaptureTests/` | 跨屏缩放合成、马赛克像素消除与八锚点几何单元测试 |
 | `Tests/SuperClipboardTests/` | 剪贴板去重/LRU 淘汰、敏感项过滤、延迟 OCR 防篡改、50 MB 磁盘预算与设置持久化单元测试 |
 | `scripts/package-mac.sh` | Release 编译、`dist/SuperTools.app` 组装、ad-hoc `codesign` 签名、`--zip` 归档与 `--install` 本地安装脚本 |
@@ -46,8 +46,8 @@
    - 磁盘缓存默认关闭（`imagePersistenceEnabled == false`），关闭状态下**不得创建** `~/Library/Caches/com.supertools.app/clipboard` 目录。显式开启后，目录权限为 `0700`、文件权限为 `0600`，严格受 **25 张 / 7 天 / 50,000,000 字节（50 MB）** 预算约束；关闭开关或清空历史时立即删除该缓存目录。注意 `~/Library/Caches/com.supertools.app` 父目录同时存放 macOS 写入的 Vision 模型缓存（`com.apple.e5rt.e5bundlecache`），清理逻辑**只能**作用在 `clipboard` 子目录内，不得删除父目录及其它条目。
 
 5. **独立运行与 `--hosted` 协议兼容**：
-   - 默认以独立模式启动：从 `~/Library/Application Support/com.supertools.app/settings.json` 加载配置并注册全局热键，菜单栏提供 `偏好设置…`（`Cmd+,`）。
-   - `hideMenuBarIcon` 为真时隐藏状态栏图标但保留全部热键；图标隐藏期间**必须**保留一条回程路径：再次启动应用时新实例通过 `DistributedNotificationCenter` 通知已在运行的实例恢复图标并打开偏好设置，随后自身退出（`exit(0)`），不得注册第二套全局热键。
+   - 默认以独立模式启动：从 `~/Library/Application Support/com.supertools.app/settings.json` 加载配置并注册全局热键，菜单栏提供 `设置…`（`Cmd+,`）。
+   - `hideMenuBarIcon` 为真时隐藏状态栏图标但保留全部热键；图标隐藏期间**必须**保留一条回程路径：再次启动应用时新实例通过 `DistributedNotificationCenter` 通知已在运行的实例恢复图标并打开设置，随后自身退出（`exit(0)`），不得注册第二套全局热键。
    - 传入 `--hosted` 参数时保持与外部桌面宿主（stdin/stdout JSON 行协议）兼容。
 
 ## 验证
