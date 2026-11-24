@@ -67,5 +67,6 @@ swift test
 - **版本发布**：仅在用户明确要求发版时，在最新 `main` 分支上打 `v<version>`（如 `v0.1.0`）tag 并推送到远端：
   - 推送 `v*` tag 会自动触发 `.github/workflows/release.yml`（先 `swift test`，再在 `macos-15` 上构建、签名、校验并发布）。
   - CI 自动将 tag 版本号注入 `Info.plist`，产出签名校验通过的 `SuperTools-macos-arm64.zip` 与 `SuperTools-macos-arm64.zip.sha256` 并发布到 GitHub Release。
+  - **签名身份必须稳定**：workflow 从仓库 secrets `SUPERTOOLS_SIGN_P12`（base64 编码的 p12）、`SUPERTOOLS_SIGN_PASSWORD`、`SUPERTOOLS_SIGN_IDENTITY`（默认 `SuperTools Local Signing`）导入证书后再打包。ad-hoc 签名每次 cdhash 都变，macOS 会把它当成另一个 app 而收回屏幕录制授权；缺 secret 时构建仍可完成但会打 warning。
   - **装新版一律从 Release 下载**：`gh release download <tag>` 取 `SuperTools-macos-arm64.zip`，解压后替换安装目录里的 `SuperTools.app`，不要用本地构建的 app 顶上。
   - 发布后用 `gh run watch <run-id>` 确认流水线成功再下载；失败则修复后重新打 tag（不要复用已失败的 tag）。

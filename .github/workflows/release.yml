@@ -23,6 +23,31 @@ jobs:
 
       - name: Run unit tests
         run: swift test
+      # A stable signing identity keeps the Screen Recording grant across releases:
+      # an ad-hoc signature has no designated requirement, so every new cdhash makes
+      # macOS treat the update as a different app and revoke what the user approved.
+      # The identity comes from a self-signed certificate stored as repository secrets;
+      # without them the build still works, it just falls back to ad-hoc.
+      - name: Import signing identity
+        env:
+          SIGN_P12: ${{ secrets.SUPERTOOLS_SIGN_P12 }}
+          SIGN_PASSWORD: ${{ secrets.SUPERTOOLS_SIGN_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.SUPERTOOLS_SIGN_IDENTITY }}
+        run: |
+          if [ -z "${SIGN_P12}" ]; then
+            echo "::warning::SUPERTOOLS_SIGN_P12 is not set — falling back to ad-hoc signing, the Screen Recording grant will not survive this update."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/supertools-signing.keychain-db"
+          printf '%s' "$SIGN_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$SIGN_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "SUPERTOOLS_SIGN_IDENTITY=${SIGN_IDENTITY:-SuperTools Local Signing}" >> "$GITHUB_ENV"
 
       - name: Package signed macOS app & zip archive
         env:
@@ -31,6 +56,10 @@ jobs:
 
       - name: Verify release artifacts
         run: |
+          codesign --verify --deep --strict dist/SuperTools.app
+          codesign -dv --verbose=4 dist/SuperTools.app 2>&1 | grep -E "^(Identifier|Authority|Signature|TeamIdentifier)=" || true
+          (cd dist && shasum -a 256 -c SuperTools-macos-arm64.zip.sha256)
+          ls -lh dist/SuperTools-macos-arm64.zip*
           codesign --verify --deep --strict dist/SuperTools.app
           (cd dist && shasum -a 256 -c SuperTools-macos-arm64.zip.sha256)
           ls -lh dist/SuperTools-macos-arm64.zip*
