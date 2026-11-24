@@ -12,7 +12,7 @@
 | `Sources/SuperCapture/UI/` | 非激活多屏截图浮层（`OverlayWindowController`、`CanvasView`）与手动滚动长截图会话（`ScrollCaptureController`，拼接匹配在 `Core/ScrollStitcher.swift`） |
 | `Sources/SuperClipboard/Monitor/` | 250 ms `changeCount` 剪贴板轮询与敏感类型过滤（`PasteboardMonitor`） |
 | `Sources/SuperClipboard/Storage/` | 内存 LRU 历史仓库（`ClipboardStore`）与有界图片磁盘缓存（`ImageDiskCache`） |
-| `Sources/SuperTools/` | 菜单栏宿主（`SuperToolsApp`）、Carbon 全局热键（`GlobalHotKeys`）、历史面板（`HistoryPanel`）、设置窗口（`SettingsPanel`）与配置持久化（`NativeSettings` / `SettingsStore`） |
+| `Sources/SuperTools/` | 菜单栏宿主（`SuperToolsApp`）、Carbon 全局热键（`GlobalHotKeys`）、历史面板（`HistoryPanel`）、设置窗口（`SettingsPanel`）、自动更新器（`Updater` / `UpdatePrompt`）与配置持久化（`NativeSettings` / `SettingsStore`） |
 | `Tests/SuperCaptureTests/` | 跨屏缩放合成、马赛克像素消除与八锚点几何单元测试 |
 | `Tests/SuperClipboardTests/` | 剪贴板去重/LRU 淘汰、敏感项过滤、延迟 OCR 防篡改、50 MB 磁盘预算与设置持久化单元测试 |
 | `scripts/package-mac.sh` | Release 编译、`dist/SuperTools.app` 组装、ad-hoc `codesign` 签名、`--zip` 归档与 `--install` 本地安装脚本 |
@@ -49,6 +49,11 @@
    - 默认以独立模式启动：从 `~/Library/Application Support/com.supertools.app/settings.json` 加载配置并注册全局热键，菜单栏提供 `设置…`（`Cmd+,`）。
    - `hideMenuBarIcon` 为真时隐藏状态栏图标但保留全部热键；图标隐藏期间**必须**保留一条回程路径：再次启动应用时新实例通过 `DistributedNotificationCenter` 通知已在运行的实例恢复图标并打开设置，随后自身退出（`exit(0)`），不得注册第二套全局热键。
    - 传入 `--hosted` 参数时保持与外部桌面宿主（stdin/stdout JSON 行协议）兼容。
+
+6. **自动更新边界**：
+   - 更新器仅在独立模式运行，`--hosted` 下不启动、不检查、不下载。
+   - 更新来源只认 `Kayphoon/SuperTools` 的 GitHub Releases 最新版；安装包必须依次通过 Release `.sha256` 核对、Bundle ID 与版本核对、`codesign --verify --deep --strict`，且当前应用为非 ad-hoc 签名时新版的第一条 `Authority=` 必须与当前应用一致，任一不过即丢弃暂存。
+   - **安装永远需要用户显式确认**：自动检查与自动下载最多把已校验的更新暂存到 `~/Library/Caches/com.supertools.app/updates/` 并弹出提示窗口，不得在无确认时替换应用包。替换由辅助脚本在主进程退出后完成，失败回滚旧包。
 
 ## 验证
 
