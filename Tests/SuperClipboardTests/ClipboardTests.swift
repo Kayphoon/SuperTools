@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Testing
 @testable import SuperCapture
 @testable import SuperClipboard
@@ -174,6 +175,35 @@ struct ClipboardTests {
         }
     }
 
+    @Test func testSourceAppIsKeptOnRecopyAndPersisted() async throws {
+        try await MainActor.run {
+            let directory = temporaryDirectory()
+            defer { cleanup(directory) }
+            let store = try ClipboardStore(directory: directory)
+            try store.setImagePersistenceEnabled(true)
+            store.recordText("from notes", source: "com.apple.Notes")
+            store.recordText("other", source: "com.apple.Safari")
+            // Picking the entry again from history must not re-attribute it.
+            store.recordText("from notes", source: "com.supertools.app")
+            #expect(store.entries.first?.text == "from notes")
+            #expect(store.entries.first?.sourceBundleID == "com.apple.Notes")
+            let reloaded = try ClipboardStore(directory: directory)
+            #expect(reloaded.entries.map(\.sourceBundleID) == ["com.apple.Notes", "com.apple.Safari"])
+
+            // Indexes written before source tracking existed still load.
+            let legacy = temporaryDirectory()
+            defer { cleanup(legacy) }
+            try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+            let text = "legacy row"
+            let digest = SHA256Hex.of(text)
+            let json = #"[{"id":"text:\#(digest)","kind":"text","text":"legacy row","createdAt":0}]"#
+            try Data(json.utf8).write(to: legacy.appendingPathComponent("history.json"))
+            let old = try ClipboardStore(directory: legacy)
+            #expect(old.entries.count == 1)
+            #expect(old.entries.first?.sourceBundleID == nil)
+        }
+    }
+
     @Test func testImageLRUEvictionDeletesOriginalsAndClearRemovesHistory() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()
@@ -228,6 +258,67 @@ struct ClipboardTests {
         try store.save(custom)
         #expect(FileManager.default.fileExists(atPath: fileURL.path))
         #expect(try store.load() == custom)
+        #expect(try store.load() == custom)
+    }
+
+    /// Build a synthetic key-down event. `ActionKey.matches` reads only the key code
+    /// and modifier flags, so no window or key map is needed.
+    private func keyEvent(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                         windowNumber: 0, context: nil, characters: "",
+                         charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode)!
+    }
+
+    @Test func testActionKeysDefaultToReturnAndSpaceAndPersist() throws {
+        let directory = temporaryDirectory()
+        defer { cleanup(directory) }
+        let fileURL = directory.appendingPathComponent("settings.json")
+        let store = SettingsStore(fileURL: fileURL)
+
+        let defaults = try store.load()
+        #expect(defaults.imageKey == .imageDefault)
+        #expect(defaults.textKey == .textDefault)
+        #expect(defaults.imageKey.keyCode == 36)
+        #expect(defaults.textKey.keyCode == 49)
+
+        var custom = defaults
+        custom.imageKey = ActionKey(keyCode: 49, modifiers: 0)
+        custom.textKey = ActionKey(keyCode: 36, modifiers: 0)
+        try store.save(custom)
+        #expect(try store.load() == custom)
+    }
+
+    @Test func testActionKeyMatchingHonoursModifiersAndKeypadEnter() {
+        let returnKey = ActionKey(keyCode: 36, modifiers: 0)
+        #expect(returnKey.matches(keyEvent(36, [])))
+        // Keypad Enter is the same intention as Return.
+        #expect(returnKey.matches(keyEvent(76, [])))
+        // Modifiers must match exactly, so Shift+Return can stay a text shortcut.
+        #expect(!returnKey.matches(keyEvent(36, [.shift])))
+        #expect(ActionKey(keyCode: 36, modifiers: 512).matches(keyEvent(76, [.shift])))
+
+        let space = ActionKey(keyCode: 49, modifiers: 0)
+        #expect(space.matches(keyEvent(49, [])))
+        #expect(!space.matches(keyEvent(49, [.option])))
+    }
+
+    @Test func testSettingsRejectDuplicateActionKeys() {
+        var settings = NativeSettings()
+        settings.textKey = settings.imageKey
+        #expect(throws: (any Error).self) { try settings.validate() }
+    }
+
+    @Test func testSettingsFromOlderBuildWithoutActionKeysFallsBackToDefaults() throws {
+        // A settings.json written before this feature has no action-key fields.
+        let legacy = """
+        {"captureShortcut":{"keyCode":19,"modifiers":768},"historyShortcut":{"keyCode":9,"modifiers":768},"imagePersistenceEnabled":true}
+        """
+        let decoded = try JSONDecoder().decode(NativeSettings.self, from: Data(legacy.utf8))
+        #expect(decoded.captureShortcut == NativeShortcut.capture)
+        #expect(decoded.historyShortcut == NativeShortcut.history)
+        #expect(decoded.imagePersistenceEnabled)
+        #expect(decoded.imageKey == .imageDefault)
+        #expect(decoded.textKey == .textDefault)
     }
 
     @Test func testLiquidGlassPanelsAndControlsEmbedNativeGlassEffects() async throws {
@@ -253,5 +344,11 @@ struct ClipboardTests {
             }
             #endif
         }
+    }
+}
+
+private enum SHA256Hex {
+    static func of(_ string: String) -> String {
+        SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

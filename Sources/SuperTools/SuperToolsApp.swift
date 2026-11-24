@@ -77,6 +77,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             self.overlay = overlay
             let history = HistoryPanel(store: store)
             history.onError = { [weak self] error in self?.show(error) }
+            history.onCopied = { [weak self] kind in self?.announce(kind == .image ? "图片已复制" : "已复制") }
             self.history = history
             let settingsPanel = SettingsPanel(settings: settings)
             settingsPanel.onApply = { [weak self] updated in

@@ -10,6 +10,8 @@ public struct ClipboardEntry {
     public let thumbnail: CGImage?
     public internal(set) var imageURL: URL?
     public internal(set) var createdAt: Date
+    /// Bundle identifier of the app that was frontmost when this was first copied.
+    public internal(set) var sourceBundleID: String? = nil
 }
 
 @MainActor
@@ -28,6 +30,7 @@ public final class ClipboardStore {
         let text: String?
         let ocrText: String?
         let createdAt: Date
+        let sourceBundleID: String?
     }
 
     public init(directory: URL) throws {
@@ -42,12 +45,14 @@ public final class ClipboardStore {
         var seen = Set<String>()
         for row in saved {
             guard seen.insert(row.id).inserted else { continue }
+            guard (row.sourceBundleID?.utf8.count ?? 0) <= 255 else { throw ClipboardError.invalidCache }
             switch row.kind {
             case .text:
                 guard let text = row.text, !text.isEmpty, text.utf8.count <= maxTextBytes,
                       row.id == "text:" + Self.digest(text) else { throw ClipboardError.invalidCache }
                 entries.append(ClipboardEntry(id: row.id, kind: .text, text: text, ocrText: nil,
-                                              thumbnail: nil, imageURL: nil, createdAt: row.createdAt))
+                                              thumbnail: nil, imageURL: nil, createdAt: row.createdAt,
+                                              sourceBundleID: row.sourceBundleID))
             case .image:
                 guard row.id.hasPrefix("image:"), (row.ocrText?.utf8.count ?? 0) <= maxOCRBytes else {
                     throw ClipboardError.invalidCache
@@ -56,7 +61,8 @@ public final class ClipboardStore {
                 guard FileManager.default.fileExists(atPath: url.path),
                       let thumbnail = cache.thumbnail(at: url) else { continue }
                 entries.append(ClipboardEntry(id: row.id, kind: .image, text: nil, ocrText: row.ocrText,
-                                              thumbnail: thumbnail, imageURL: url, createdAt: row.createdAt))
+                                              thumbnail: thumbnail, imageURL: url, createdAt: row.createdAt,
+                                              sourceBundleID: row.sourceBundleID))
             }
         }
         try reconcile()
@@ -85,22 +91,25 @@ public final class ClipboardStore {
     }
 
     @discardableResult
-    public func recordText(_ text: String) -> String? {
+    public func recordText(_ text: String, source: String? = nil) -> String? {
         guard !text.isEmpty, text.utf8.count <= maxTextBytes else { return nil }
         let id = "text:" + Self.digest(text)
+        let source = existingSource(for: id) ?? source
         entries.removeAll { $0.id == id }
         entries.insert(ClipboardEntry(id: id, kind: .text, text: text, ocrText: nil,
-                                      thumbnail: nil, imageURL: nil, createdAt: Date()), at: 0)
+                                      thumbnail: nil, imageURL: nil, createdAt: Date(),
+                                      sourceBundleID: source), at: 0)
         do { try reconcile() } catch { onError?(error) }
         return id
     }
 
     @discardableResult
-    public func recordImage(_ image: CGImage) throws -> String? {
+    public func recordImage(_ image: CGImage, source: String? = nil) throws -> String? {
         let hash = try ImageDiskCache.hash(image)
         let thumbnail = try ImageDiskCache.thumbnail(image)
         let id = "image:" + hash
         let previousOCR = entries.first(where: { $0.id == id })?.ocrText
+        let source = existingSource(for: id) ?? source
         let url: URL?
         if imagePersistenceEnabled {
             url = try cache.save(image, hash: hash) { incomingBytes in
@@ -115,9 +124,16 @@ public final class ClipboardStore {
         } else { url = nil }
         entries.removeAll { $0.id == id }
         entries.insert(ClipboardEntry(id: id, kind: .image, text: nil, ocrText: previousOCR,
-                                      thumbnail: thumbnail, imageURL: url, createdAt: Date()), at: 0)
+                                      thumbnail: thumbnail, imageURL: url, createdAt: Date(),
+                                      sourceBundleID: source), at: 0)
         try reconcile()
         return entries.contains(where: { $0.id == id }) ? id : nil
+    }
+
+    /// Re-copying an entry (e.g. picking it from the history panel) keeps the app
+    /// it originally came from instead of attributing it to whoever is frontmost.
+    private func existingSource(for id: String) -> String? {
+        entries.first(where: { $0.id == id })?.sourceBundleID
     }
 
     public func attachOCR(_ text: String, to id: String) {
@@ -198,7 +214,7 @@ public final class ClipboardStore {
         var saved = entries.compactMap { entry -> SavedEntry? in
             guard entry.kind == .text || entry.imageURL != nil else { return nil }
             return SavedEntry(id: entry.id, kind: entry.kind, text: entry.text, ocrText: entry.ocrText,
-                              createdAt: entry.createdAt)
+                              createdAt: entry.createdAt, sourceBundleID: entry.sourceBundleID)
         }
         var data = try JSONEncoder().encode(saved)
         while data.count > 8 * 1024 * 1024, let removed = entries.popLast() {

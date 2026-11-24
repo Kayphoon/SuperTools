@@ -37,6 +37,8 @@ public final class PasteboardMonitor {
         guard change != lastChange else { return }
         lastChange = change
         guard pasteboard.types?.contains(where: { Self.excludedTypes.contains($0.rawValue) }) != true else { return }
+        // Read only after a change, so idle polling still touches nothing but changeCount.
+        let sourceApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let items = pasteboard.pasteboardItems ?? []
         guard !items.contains(where: { item in
             item.types.contains(where: { Self.excludedTypes.contains($0.rawValue) })
@@ -55,12 +57,12 @@ public final class PasteboardMonitor {
                           width * height <= 64_000_000,
                           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
                     guard pasteboard.changeCount == change else { return }
-                    try store.recordImage(image)
+                    try store.recordImage(image, source: sourceApp)
                     return
                 }
             }
             if let text = pasteboard.string(forType: .string), pasteboard.changeCount == change {
-                store.recordText(text)
+                store.recordText(text, source: sourceApp)
             }
         } catch { onError?(error) }
     }
@@ -74,13 +76,13 @@ public final class PasteboardMonitor {
         pasteboard.clearContents()
         guard pasteboard.setData(data, forType: .png) else { throw ClipboardError.pasteboardWriteFailed }
         lastChange = pasteboard.changeCount
-        return try store.recordImage(image)
+        return try store.recordImage(image, source: Bundle.main.bundleIdentifier)
     }
 
     public func copyText(_ text: String) throws {
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else { throw ClipboardError.pasteboardWriteFailed }
         lastChange = pasteboard.changeCount
-        store.recordText(text)
+        store.recordText(text, source: Bundle.main.bundleIdentifier)
     }
 }
