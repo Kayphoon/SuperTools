@@ -309,7 +309,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(action("打开屏幕录制权限设置…", #selector(openScreenRecordingSettings)))
         menu.addItem(.separator())
-        let preferences = action("偏好设置…", #selector(showSettings))
+        let preferences = action("设置…", #selector(showSettings))
         preferences.keyEquivalent = ","
         menu.addItem(preferences)
         menu.addItem(.separator())

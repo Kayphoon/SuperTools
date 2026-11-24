@@ -1,16 +1,49 @@
 import AppKit
 import SuperCapture
 
-/// A settings window that can take the keyboard. The recording feature matches
-/// incoming events against `event.window`, and a panel that never becomes key
-/// silently drops every keystroke, so this cannot use `.nonactivatingPanel`.
-private final class SettingsWindow: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-}
-
+/// Settings window in the shape of a macOS Settings page — sidebar on the
+/// left, one calm page per section — dressed in the Kami （紙） design
+/// language (tw93/kami): a warm parchment canvas, ink-blue (#1B365D) as the
+/// single accent, serif display type for headings, hairline rules and
+/// generous whitespace instead of shadows and glass. Dark mode keeps the
+/// same idea on a warm charcoal paper.
+///
+/// The controller keeps its original contract with the app delegate:
+/// `present(with:)`, `update(settings:)`, `onApply`, `close()`. All settings
+/// still live in `NativeSettings`; this file is presentation only.
 @MainActor
 final class SettingsPanel: NSWindowController, NSWindowDelegate {
+    private enum Section: Int, CaseIterable {
+        case general, shortcuts, clipboard, about
+
+        var title: String {
+            switch self {
+            case .general: return "通用"
+            case .shortcuts: return "快捷键"
+            case .clipboard: return "剪贴板"
+            case .about: return "关于"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .general: return "gearshape"
+            case .shortcuts: return "keyboard"
+            case .clipboard: return "doc.on.clipboard"
+            case .about: return "info.circle"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .general: return "菜单栏图标与选中历史后的行为。"
+            case .shortcuts: return "全局快捷键与截图后的确认键，都可以重新录制。"
+            case .clipboard: return "图片历史的磁盘缓存。默认关闭，历史只留在内存里。"
+            case .about: return ""
+            }
+        }
+    }
+
     private enum RecordingTarget {
         case capture
         case history
@@ -18,234 +51,543 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         case textKey
     }
 
+    // MARK: - Kami palette
+
+    private static func dynamicColor(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    private static func srgb(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
+    }
+
+    /// Warm parchment canvas (Kami paper #F5F4ED); warm charcoal when dark.
+    private static let paper = dynamicColor(light: srgb(0xF5F4ED), dark: srgb(0x232019))
+    /// Sidebar: one step deeper than the canvas.
+    private static let sidebarPaper = dynamicColor(light: srgb(0xEDEAE0), dark: srgb(0x1C1A15))
+    /// Card surface: near-white warm paper; a lifted warm gray when dark.
+    private static let card = dynamicColor(light: srgb(0xFDFCF9), dark: srgb(0x2C2921))
+    /// Warm hairline (yellow-brown undertone gray, per Kami).
+    private static let hairline = dynamicColor(light: srgb(0xDCD6C6), dark: srgb(0x454034))
+    /// Ink blue, the single accent.
+    private static let ink = dynamicColor(light: srgb(0x1B365D), dark: srgb(0x8FB0DC))
+    private static let inkFill = srgb(0x1B365D)
+    /// Keycap fill.
+    private static let keycap = dynamicColor(light: srgb(0xEFECDF), dark: srgb(0x3A362B))
+
+    private static func serifFont(size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
+        // Songti SC is the system serif for Simplified Chinese; Kami's Chinese
+        // face is a Kai/serif, so headings set in Songti keep the paper feel
+        // without bundling a font.
+        let traits: NSFontTraitMask = weight == .bold ? .boldFontMask : []
+        if let songti = NSFontManager.shared.font(withFamily: "Songti SC", traits: traits, weight: 5, size: size) {
+            return songti
+        }
+        return .systemFont(ofSize: size, weight: weight)
+    }
+
+    /// Layer-backed view whose fill/stroke are re-resolved in `updateLayer`,
+    /// so the dynamic Kami colors follow light/dark appearance changes
+    /// instead of freezing at the value they had when first set.
+    private final class PaperView: NSView {
+        var fill: NSColor = .clear { didSet { needsDisplay = true } }
+        var stroke: NSColor? { didSet { needsDisplay = true } }
+        var corner: CGFloat = 0 { didSet { needsDisplay = true } }
+        var onAppearanceChange: (() -> Void)?
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override var wantsUpdateLayer: Bool { true }
+
+        override func updateLayer() {
+            layer?.backgroundColor = fill.cgColor
+            layer?.borderColor = stroke?.cgColor
+            layer?.borderWidth = stroke == nil ? 0 : 1
+            layer?.cornerRadius = corner
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            onAppearanceChange?()
+        }
+    }
+
+    // MARK: - State
+
     private var settings: NativeSettings
     private var recordingTarget: RecordingTarget?
     private var keyMonitor: Any?
+    private var currentSection: Section = .general
 
-    private let rootGlass = GlassSurfaceView(variant: .regular, cornerRadius: 16, isInteractive: true)
-    private let controlsGroup = GlassGroupView(spacing: 10)
-    private let captureBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
-    private let historyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
-    private let imageKeyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
-    private let textKeyBadge = GlassSurfaceView(variant: .clear, cornerRadius: 8, isInteractive: false)
+    // MARK: - Views
+
+    private var sectionButtons: [Section: NSButton] = [:]
+    private var sectionPages: [Section: NSView] = [:]
+    private let contentContainer = NSView()
+
     private let captureValueLabel = NSTextField(labelWithString: "")
     private let historyValueLabel = NSTextField(labelWithString: "")
     private let imageKeyValueLabel = NSTextField(labelWithString: "")
     private let textKeyValueLabel = NSTextField(labelWithString: "")
-    private let recordCaptureButton = NSButton(title: "录制快捷键", target: nil, action: nil)
-    private let recordHistoryButton = NSButton(title: "录制快捷键", target: nil, action: nil)
-    private let recordImageKeyButton = NSButton(title: "录制按键", target: nil, action: nil)
-    private let recordTextKeyButton = NSButton(title: "录制按键", target: nil, action: nil)
-    private let restoreDefaultButton = NSButton(title: "恢复默认", target: nil, action: nil)
-    private let persistenceCheckbox = NSButton(
-        checkboxWithTitle: "保存图片历史到磁盘缓存（最多 25 张 / 50 MB）",
-        target: nil,
-        action: nil
-    )
-    private let pasteCheckbox = NSButton(
-        checkboxWithTitle: "选中历史后直接粘贴到原窗口（需要辅助功能权限）",
-        target: nil,
-        action: nil
-    )
-    private let hideMenuBarCheckbox = NSButton(
-        checkboxWithTitle: "隐藏菜单栏图标（快捷键照常可用，再次打开 SuperTools 可恢复）",
-        target: nil,
-        action: nil
-    )
+    private let recordCaptureButton = NSButton(title: "录制", target: nil, action: nil)
+    private let recordHistoryButton = NSButton(title: "录制", target: nil, action: nil)
+    private let recordImageKeyButton = NSButton(title: "录制", target: nil, action: nil)
+    private let recordTextKeyButton = NSButton(title: "录制", target: nil, action: nil)
+    private let menuBarSwitch = NSSwitch()
+    private let pasteSwitch = NSSwitch()
+    private let persistenceSwitch = NSSwitch()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     var onApply: ((NativeSettings) throws -> Void)?
 
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
-        let panel = SettingsWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 500, height: 424),
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 680, height: 470),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        panel.title = "SuperTools 设置"
-        panel.isReleasedWhenClosed = false
-        panel.hidesOnDeactivate = false
-        panel.level = .floating
-        panel.configureLiquidGlassWindow()
-        super.init(window: panel)
-        panel.delegate = self
-        setupViews(in: panel)
+        window.title = "SuperTools 设置"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
+        super.init(window: window)
+        window.delegate = self
+        setupViews(in: window)
         refreshUI()
     }
 
     required init?(coder: NSCoder) { nil }
 
-    private func setupViews(in panel: NSPanel) {
-        panel.contentView = rootGlass
-        let content = rootGlass.contentContainer
+    // MARK: - Layout
 
-        let captureTitleLabel = NSTextField(labelWithString: "截图快捷键")
-        captureTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        captureValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        captureValueLabel.alignment = .center
-        captureValueLabel.translatesAutoresizingMaskIntoConstraints = false
-        captureBadge.contentContainer.addSubview(captureValueLabel)
+    private func setupViews(in window: NSWindow) {
+        let root = PaperView()
+        root.fill = Self.paper
+        root.onAppearanceChange = { [weak self] in self?.refreshTheme() }
+        window.contentView = root
+
+        let sidebar = buildSidebar()
+        root.addSubview(sidebar)
+        root.addSubview(contentContainer)
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            captureValueLabel.topAnchor.constraint(equalTo: captureBadge.contentContainer.topAnchor, constant: 4),
-            captureValueLabel.leadingAnchor.constraint(equalTo: captureBadge.contentContainer.leadingAnchor, constant: 10),
-            captureValueLabel.trailingAnchor.constraint(equalTo: captureBadge.contentContainer.trailingAnchor, constant: -10),
-            captureValueLabel.bottomAnchor.constraint(equalTo: captureBadge.contentContainer.bottomAnchor, constant: -4),
-            captureBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
+            sidebar.topAnchor.constraint(equalTo: root.topAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: 178),
+            contentContainer.topAnchor.constraint(equalTo: root.topAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor)
         ])
 
-        recordCaptureButton.target = self
-        recordCaptureButton.action = #selector(recordCaptureShortcut)
-        recordCaptureButton.applyLiquidGlassStyle()
-
-        let captureSpacer = NSView()
-        let captureRow = NSStackView(views: [captureTitleLabel, captureSpacer, captureBadge, recordCaptureButton])
-        captureRow.orientation = .horizontal
-        captureRow.spacing = 10
-        captureRow.alignment = .centerY
-
-        let historyTitleLabel = NSTextField(labelWithString: "剪贴板历史快捷键")
-        historyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        historyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        historyValueLabel.alignment = .center
-        historyValueLabel.translatesAutoresizingMaskIntoConstraints = false
-        historyBadge.contentContainer.addSubview(historyValueLabel)
-        NSLayoutConstraint.activate([
-            historyValueLabel.topAnchor.constraint(equalTo: historyBadge.contentContainer.topAnchor, constant: 4),
-            historyValueLabel.leadingAnchor.constraint(equalTo: historyBadge.contentContainer.leadingAnchor, constant: 10),
-            historyValueLabel.trailingAnchor.constraint(equalTo: historyBadge.contentContainer.trailingAnchor, constant: -10),
-            historyValueLabel.bottomAnchor.constraint(equalTo: historyBadge.contentContainer.bottomAnchor, constant: -4),
-            historyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
-        ])
-
-        recordHistoryButton.target = self
-        recordHistoryButton.action = #selector(recordHistoryShortcut)
-        recordHistoryButton.applyLiquidGlassStyle()
-
-        let historySpacer = NSView()
-        let historyRow = NSStackView(views: [historyTitleLabel, historySpacer, historyBadge, recordHistoryButton])
-        historyRow.orientation = .horizontal
-        historyRow.spacing = 10
-        historyRow.alignment = .centerY
-
-        // Action keys: read only while the capture overlay owns the keyboard, so a
-        // bare Return / Space is legitimate here (unlike a global hotkey).
-        let imageKeyTitleLabel = NSTextField(labelWithString: "截图后 · 复制图片")
-        imageKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        imageKeyTitleLabel.toolTip = "默认 ↵：在选区内按一下就复制图片（双击选区效果相同）。"
-        imageKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        imageKeyValueLabel.alignment = .center
-        imageKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
-        imageKeyBadge.contentContainer.addSubview(imageKeyValueLabel)
-        NSLayoutConstraint.activate([
-            imageKeyValueLabel.topAnchor.constraint(equalTo: imageKeyBadge.contentContainer.topAnchor, constant: 4),
-            imageKeyValueLabel.leadingAnchor.constraint(equalTo: imageKeyBadge.contentContainer.leadingAnchor, constant: 10),
-            imageKeyValueLabel.trailingAnchor.constraint(equalTo: imageKeyBadge.contentContainer.trailingAnchor, constant: -10),
-            imageKeyValueLabel.bottomAnchor.constraint(equalTo: imageKeyBadge.contentContainer.bottomAnchor, constant: -4),
-            imageKeyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
-        ])
-        recordImageKeyButton.target = self
-        recordImageKeyButton.action = #selector(recordImageKey)
-        recordImageKeyButton.applyLiquidGlassStyle()
-        let imageKeyRow = NSStackView(views: [imageKeyTitleLabel, NSView(), imageKeyBadge, recordImageKeyButton])
-        imageKeyRow.orientation = .horizontal
-        imageKeyRow.spacing = 10
-        imageKeyRow.alignment = .centerY
-
-        let textKeyTitleLabel = NSTextField(labelWithString: "截图后 · 识别文字")
-        textKeyTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        textKeyTitleLabel.toolTip = "默认空格：在选区内按一下就只识别并复制文字（⇧↵ / ⌘C 同样可用）。"
-        textKeyValueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
-        textKeyValueLabel.alignment = .center
-        textKeyValueLabel.translatesAutoresizingMaskIntoConstraints = false
-        textKeyBadge.contentContainer.addSubview(textKeyValueLabel)
-        NSLayoutConstraint.activate([
-            textKeyValueLabel.topAnchor.constraint(equalTo: textKeyBadge.contentContainer.topAnchor, constant: 4),
-            textKeyValueLabel.leadingAnchor.constraint(equalTo: textKeyBadge.contentContainer.leadingAnchor, constant: 10),
-            textKeyValueLabel.trailingAnchor.constraint(equalTo: textKeyBadge.contentContainer.trailingAnchor, constant: -10),
-            textKeyValueLabel.bottomAnchor.constraint(equalTo: textKeyBadge.contentContainer.bottomAnchor, constant: -4),
-            textKeyBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 76)
-        ])
-        recordTextKeyButton.target = self
-        recordTextKeyButton.action = #selector(recordTextKey)
-        recordTextKeyButton.applyLiquidGlassStyle()
-        let textKeyRow = NSStackView(views: [textKeyTitleLabel, NSView(), textKeyBadge, recordTextKeyButton])
-        textKeyRow.orientation = .horizontal
-        textKeyRow.spacing = 10
-        textKeyRow.alignment = .centerY
-
-        restoreDefaultButton.target = self
-        restoreDefaultButton.action = #selector(restoreDefaults)
-        restoreDefaultButton.applyLiquidGlassStyle()
-
-        let restoreRow = NSStackView(views: [NSView(), restoreDefaultButton])
-        restoreRow.orientation = .horizontal
-
-        let divider = NSBox()
-        divider.boxType = .separator
-
-        persistenceCheckbox.target = self
-        persistenceCheckbox.action = #selector(togglePersistence)
-
-        pasteCheckbox.target = self
-        pasteCheckbox.action = #selector(togglePasteOnSelect)
-
-        hideMenuBarCheckbox.target = self
-        hideMenuBarCheckbox.action = #selector(toggleHideMenuBarIcon)
+        for section in Section.allCases {
+            let page = buildPage(for: section)
+            page.isHidden = section != currentSection
+            contentContainer.addSubview(page)
+            page.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                page.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+                page.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+                page.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+                page.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor)
+            ])
+            sectionPages[section] = page
+        }
 
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.maximumNumberOfLines = 2
-
-        let divider2 = NSBox()
-        divider2.boxType = .separator
-
-        let stack = NSStackView(views: [
-            captureRow,
-            historyRow,
-            restoreRow,
-            divider,
-            imageKeyRow,
-            textKeyRow,
-            divider2,
-            persistenceCheckbox,
-            pasteCheckbox,
-            hideMenuBarCheckbox,
-            statusLabel
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 28),
+            statusLabel.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -28),
+            statusLabel.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -16)
         ])
+        selectSection(.general)
+    }
+
+    private func buildSidebar() -> NSView {
+        let sidebar = PaperView()
+        sidebar.fill = Self.sidebarPaper
+
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let name = NSTextField(labelWithString: "SuperTools")
+        name.font = Self.serifFont(size: 16, weight: .bold)
+        name.alignment = .center
+        let versionText = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+            .map { "版本 \($0)" } ?? ""
+        let version = NSTextField(labelWithString: versionText)
+        version.font = .systemFont(ofSize: 11)
+        version.textColor = .secondaryLabelColor
+        version.alignment = .center
+
+        let header = NSStackView(views: [icon, name, version])
+        header.orientation = .vertical
+        header.alignment = .centerX
+        header.spacing = 3
+        header.setCustomSpacing(8, after: icon)
+
+        var buttons: [NSView] = []
+        for section in Section.allCases {
+            let button = NSButton(title: section.title, target: self, action: #selector(sectionButtonClicked(_:)))
+            button.tag = section.rawValue
+            button.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: section.title)
+            button.imagePosition = .imageLeading
+            button.bezelStyle = .recessed
+            button.isBordered = false
+            button.font = .systemFont(ofSize: 13, weight: .medium)
+            button.alignment = .left
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 7
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            sectionButtons[section] = button
+            buttons.append(button)
+        }
+        let list = NSStackView(views: buttons)
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 4
+        for button in buttons {
+            button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        }
+
+        let stack = NSStackView(views: [header, list])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 22
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        list.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        sidebar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            // Leave room for the traffic lights above the app icon.
+            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 40),
+            stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14)
+        ])
+        return sidebar
+    }
+
+    /// One section page: serif title, quiet subtitle, then paper cards.
+    private func buildPage(for section: Section) -> NSView {
+        let page = NSView()
+        let title = NSTextField(labelWithString: section.title)
+        title.font = Self.serifFont(size: 21, weight: .bold)
+        var views: [NSView] = [title]
+        if !section.subtitle.isEmpty {
+            let subtitle = NSTextField(wrappingLabelWithString: section.subtitle)
+            subtitle.font = .systemFont(ofSize: 12.5)
+            subtitle.textColor = .secondaryLabelColor
+            views.append(subtitle)
+        }
+        switch section {
+        case .general: views.append(buildGeneralCard())
+        case .shortcuts: views.append(contentsOf: buildShortcutCards())
+        case .clipboard: views.append(buildClipboardCard())
+        case .about: views.append(buildAboutCard())
+        }
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.setCustomSpacing(6, after: title)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        page.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: page.topAnchor, constant: 30),
+            stack.leadingAnchor.constraint(equalTo: page.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: page.trailingAnchor, constant: -28)
+        ])
+        for view in views where view !== title {
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return page
+    }
+
+    // MARK: - Card & row helpers
+
+    /// A paper card: warm surface, one hairline border, rows split by hairlines.
+    private func card(rows: [NSView]) -> NSView {
+        let container = PaperView()
+        container.fill = Self.card
+        container.stroke = Self.hairline
+        container.corner = 10
+
+        var children: [NSView] = []
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                let rule = PaperView()
+                rule.fill = Self.hairline
+                rule.translatesAutoresizingMaskIntoConstraints = false
+                rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                children.append(rule)
+            }
+            children.append(row)
+        }
+        let stack = NSStackView(views: children)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4)
+        ])
+        for child in children {
+            child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return container
+    }
+
+    /// Label on the left, control on the right, optional quiet footnote under
+    /// the label. This is the only row shape the window uses.
+    private func row(label: String, footnote: String? = nil, control: NSView) -> NSView {
+        let title = NSTextField(labelWithString: label)
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        var leftViews: [NSView] = [title]
+        if let footnote {
+            let note = NSTextField(wrappingLabelWithString: footnote)
+            note.font = .systemFont(ofSize: 11.5)
+            note.textColor = .secondaryLabelColor
+            leftViews.append(note)
+        }
+        let left = NSStackView(views: leftViews)
+        left.orientation = .vertical
+        left.alignment = .leading
+        left.spacing = 3
+
+        let container = NSStackView(views: [left, control])
+        container.orientation = .horizontal
+        container.alignment = .centerY
+        container.spacing = 12
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        left.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        return container
+    }
+
+    private func keycap(_ label: NSTextField) -> NSView {
+        label.font = .monospacedSystemFont(ofSize: 12.5, weight: .semibold)
+        label.alignment = .center
+        let cap = PaperView()
+        cap.fill = Self.keycap
+        cap.stroke = Self.hairline
+        cap.corner = 6
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cap.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: cap.topAnchor, constant: 3),
+            label.leadingAnchor.constraint(equalTo: cap.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: cap.trailingAnchor, constant: -9),
+            label.bottomAnchor.constraint(equalTo: cap.bottomAnchor, constant: -3),
+            cap.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
+        ])
+        return cap
+    }
+
+    private func recordButton(_ button: NSButton, action: Selector) -> NSView {
+        button.target = self
+        button.action = action
+        button.bezelStyle = .recessed
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 6
+        button.layer?.borderWidth = 1
+        button.layer?.borderColor = Self.hairline.cgColor
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        return button
+    }
+
+    private func keyRow(label: String, footnote: String?, value: NSTextField, button: NSButton, action: Selector) -> NSView {
+        let controls = NSStackView(views: [keycap(value), recordButton(button, action: action)])
+        controls.orientation = .horizontal
+        controls.spacing = 8
+        controls.alignment = .centerY
+        return row(label: label, footnote: footnote, control: controls)
+    }
+
+    // MARK: - Sections
+
+    private func buildGeneralCard() -> NSView {
+        menuBarSwitch.target = self
+        menuBarSwitch.action = #selector(toggleMenuBarIcon)
+        pasteSwitch.target = self
+        pasteSwitch.action = #selector(togglePasteOnSelect)
+        return card(rows: [
+            row(label: "显示菜单栏图标",
+                footnote: "关掉后快捷键照常可用；再次打开 SuperTools 即可恢复图标并打开设置。",
+                control: menuBarSwitch),
+            row(label: "选中历史后直接粘贴",
+                footnote: "把选中的历史条目粘贴回原窗口，需要辅助功能权限。",
+                control: pasteSwitch)
+        ])
+    }
+
+    private func buildShortcutCards() -> [NSView] {
+        let global = card(rows: [
+            keyRow(label: "截图", footnote: nil, value: captureValueLabel,
+                   button: recordCaptureButton, action: #selector(recordCaptureShortcut)),
+            keyRow(label: "剪贴板历史", footnote: nil, value: historyValueLabel,
+                   button: recordHistoryButton, action: #selector(recordHistoryShortcut))
+        ])
+        let actions = card(rows: [
+            keyRow(label: "截图后 · 复制图片", footnote: "默认 ↵，在选区内按一下即可（双击选区效果相同）。",
+                   value: imageKeyValueLabel, button: recordImageKeyButton, action: #selector(recordImageKey)),
+            keyRow(label: "截图后 · 识别文字", footnote: "默认空格，只识别并复制文字（⇧↵ / ⌘C 同样可用）。",
+                   value: textKeyValueLabel, button: recordTextKeyButton, action: #selector(recordTextKey))
+        ])
+        let restore = NSButton(title: "恢复默认按键", target: self, action: #selector(restoreDefaults))
+        restore.bezelStyle = .recessed
+        restore.isBordered = false
+        restore.font = .systemFont(ofSize: 12, weight: .medium)
+        restore.contentTintColor = Self.ink
+        restore.wantsLayer = true
+        restore.layer?.cornerRadius = 6
+        restore.layer?.borderWidth = 1
+        restore.layer?.borderColor = Self.hairline.cgColor
+        restore.translatesAutoresizingMaskIntoConstraints = false
+        restore.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        let restoreRow = NSStackView(views: [NSView(), restore])
+        restoreRow.orientation = .horizontal
+        return [global, actions, restoreRow]
+    }
+
+    private func buildClipboardCard() -> NSView {
+        persistenceSwitch.target = self
+        persistenceSwitch.action = #selector(togglePersistence)
+        return card(rows: [
+            row(label: "保存图片历史到磁盘缓存",
+                footnote: "最多 25 张 / 7 天 / 50 MB，缓存目录权限 0700。关闭后立即删除缓存；不开启时内存里只保留 128 px 缩略图与识别文本。",
+                control: persistenceSwitch),
+            row(label: "隐私",
+                footnote: "被标记为隐藏或临时类型的复制内容（例如来自密码管理器）不会进入历史。剪贴板内容不离开这台 Mac。",
+                control: NSView())
+        ])
+    }
+
+    private func buildAboutCard() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
+
+        let name = NSTextField(labelWithString: "SuperTools")
+        name.font = Self.serifFont(size: 19, weight: .bold)
+        let tagline = NSTextField(wrappingLabelWithString: "截图、标注、文字识别与剪贴板历史，全部在这台 Mac 上本地完成。")
+        tagline.font = .systemFont(ofSize: 12.5)
+        tagline.textColor = .secondaryLabelColor
+
+        let repo = NSButton(title: "github.com/Kayphoon/SuperTools", target: self, action: #selector(openRepository))
+        repo.bezelStyle = .inline
+        repo.isBordered = false
+        repo.font = .systemFont(ofSize: 12.5, weight: .medium)
+        repo.contentTintColor = Self.ink
+
+        let text = NSStackView(views: [name, tagline, repo])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 5
+
+        let head = NSStackView(views: [icon, text])
+        head.orientation = .horizontal
+        head.alignment = .centerY
+        head.spacing = 14
+
+        let credit = NSTextField(wrappingLabelWithString: "界面取 Kami（紙）的纸面与墨蓝：暖纸底、单一墨蓝强调、细线分隔。")
+        credit.font = .systemFont(ofSize: 11.5)
+        credit.textColor = .secondaryLabelColor
+
+        let container = PaperView()
+        container.fill = Self.card
+        container.stroke = Self.hairline
+        container.corner = 10
+        let rule = PaperView()
+        rule.fill = Self.hairline
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let stack = NSStackView(views: [head, rule, credit])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
-
-        controlsGroup.translatesAutoresizingMaskIntoConstraints = false
-        controlsGroup.contentContainer.addSubview(stack)
-        content.addSubview(controlsGroup)
-
+        container.addSubview(stack)
         NSLayoutConstraint.activate([
-            controlsGroup.topAnchor.constraint(equalTo: content.topAnchor, constant: 40),
-            controlsGroup.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            controlsGroup.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            controlsGroup.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: controlsGroup.contentContainer.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: controlsGroup.contentContainer.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: controlsGroup.contentContainer.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: controlsGroup.contentContainer.bottomAnchor),
-            captureRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            historyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            restoreRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            divider2.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            imageKeyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            textKeyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            recordCaptureButton.widthAnchor.constraint(equalToConstant: 110),
-            recordHistoryButton.widthAnchor.constraint(equalToConstant: 110),
-            recordImageKeyButton.widthAnchor.constraint(equalToConstant: 110),
-            recordTextKeyButton.widthAnchor.constraint(equalToConstant: 110)
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            head.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            rule.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            credit.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
+        return container
     }
+
+    @objc private func openRepository() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/Kayphoon/SuperTools")!)
+    }
+
+    @objc private func sectionButtonClicked(_ sender: NSButton) {
+        guard let section = Section(rawValue: sender.tag) else { return }
+        selectSection(section)
+    }
+
+    private func selectSection(_ section: Section) {
+        currentSection = section
+        stopRecording()
+        statusLabel.stringValue = ""
+        for (key, page) in sectionPages { page.isHidden = key != section }
+        for (key, button) in sectionButtons {
+            let selected = key == section
+            button.layer?.backgroundColor = selected ? Self.inkFill.cgColor : NSColor.clear.cgColor
+            button.contentTintColor = selected ? .white : .labelColor
+            // Borderless buttons do not reliably tint their plain title, so set
+            // the title color explicitly for the ink-filled selected row.
+            button.attributedTitle = NSAttributedString(
+                string: key.title,
+                attributes: [.foregroundColor: selected ? NSColor.white : NSColor.labelColor,
+                             .font: NSFont.systemFont(ofSize: 13, weight: .medium)])
+        }
+    }
+
+    /// Re-apply the colors that live on button layers (snapshots of the
+    /// dynamic palette) after a light/dark appearance change. PaperViews
+    /// re-resolve themselves through `updateLayer`.
+    private func refreshTheme() {
+        selectSection(currentSection)
+        refreshUI()
+    }
+
+    // MARK: - Presentation & state
 
     func present(with currentSettings: NativeSettings) {
         stopRecording()
@@ -254,11 +596,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         statusLabel.stringValue = ""
         refreshUI()
         NSApp.activate(ignoringOtherApps: true)
-        guard let panel = window as? NSPanel else { return }
-        panel.center()
-        let targetFrame = panel.frame
-        panel.makeKeyAndOrderFront(nil)
-        panel.animateLiquidGlassEntrance(targetFrame: targetFrame)
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
     }
 
     func update(settings currentSettings: NativeSettings) {
@@ -271,74 +610,64 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         historyValueLabel.stringValue = settings.historyShortcut.displayString
         imageKeyValueLabel.stringValue = settings.imageKey.displayString
         textKeyValueLabel.stringValue = settings.textKey.displayString
-        recordCaptureButton.title = recordingTarget == .capture ? "按下快捷键…" : "录制快捷键"
-        recordHistoryButton.title = recordingTarget == .history ? "按下快捷键…" : "录制快捷键"
-        recordImageKeyButton.title = recordingTarget == .imageKey ? "按下按键…" : "录制按键"
-        recordTextKeyButton.title = recordingTarget == .textKey ? "按下按键…" : "录制按键"
-        recordCaptureButton.applyLiquidGlassStyle(active: recordingTarget == .capture)
-        recordHistoryButton.applyLiquidGlassStyle(active: recordingTarget == .history)
-        recordImageKeyButton.applyLiquidGlassStyle(active: recordingTarget == .imageKey)
-        recordTextKeyButton.applyLiquidGlassStyle(active: recordingTarget == .textKey)
-        persistenceCheckbox.state = settings.imagePersistenceEnabled ? .on : .off
-        pasteCheckbox.state = settings.pasteOnSelect ? .on : .off
-        hideMenuBarCheckbox.state = settings.hideMenuBarIcon ? .on : .off
+        recordCaptureButton.title = recordingTarget == .capture ? "按下…" : "录制"
+        recordHistoryButton.title = recordingTarget == .history ? "按下…" : "录制"
+        recordImageKeyButton.title = recordingTarget == .imageKey ? "按下…" : "录制"
+        recordTextKeyButton.title = recordingTarget == .textKey ? "按下…" : "录制"
+        styleRecordButton(recordCaptureButton, active: recordingTarget == .capture)
+        styleRecordButton(recordHistoryButton, active: recordingTarget == .history)
+        styleRecordButton(recordImageKeyButton, active: recordingTarget == .imageKey)
+        styleRecordButton(recordTextKeyButton, active: recordingTarget == .textKey)
+        // The switch reads as the positive form: on = icon shown.
+        menuBarSwitch.state = settings.hideMenuBarIcon ? .off : .on
+        pasteSwitch.state = settings.pasteOnSelect ? .on : .off
+        persistenceSwitch.state = settings.imagePersistenceEnabled ? .on : .off
     }
 
-    @objc private func recordCaptureShortcut() {
-        if recordingTarget == .capture {
-            stopRecording()
-            statusLabel.stringValue = ""
-            refreshUI()
-        } else {
-            startRecording(.capture)
-        }
+    private func styleRecordButton(_ button: NSButton, active: Bool) {
+        button.layer?.borderColor = (active ? Self.ink : Self.hairline).cgColor
+        button.contentTintColor = active ? Self.ink : .labelColor
+    }
+
+    // MARK: - Actions
+
+    @objc private func toggleMenuBarIcon() {
+        stopRecording()
+        var updated = settings
+        updated.hideMenuBarIcon = (menuBarSwitch.state == .off)
+        applyUpdatedSettings(updated, message: updated.hideMenuBarIcon
+                             ? "菜单栏图标已隐藏，再次打开 SuperTools 可恢复。"
+                             : "菜单栏图标已恢复")
     }
 
     @objc private func togglePasteOnSelect() {
         stopRecording()
         var updated = settings
-        updated.pasteOnSelect = (pasteCheckbox.state == .on)
+        updated.pasteOnSelect = (pasteSwitch.state == .on)
         applyUpdatedSettings(updated, message: updated.pasteOnSelect ? "选中历史后将直接粘贴" : "")
     }
 
-    @objc private func toggleHideMenuBarIcon() {
+    @objc private func togglePersistence() {
         stopRecording()
         var updated = settings
-        updated.hideMenuBarIcon = (hideMenuBarCheckbox.state == .on)
-        applyUpdatedSettings(updated, message: updated.hideMenuBarIcon
-                             ? "菜单栏图标已隐藏，再点一次或重新打开 SuperTools 可恢复。"
-                             : "菜单栏图标已恢复")
+        updated.imagePersistenceEnabled = (persistenceSwitch.state == .on)
+        applyUpdatedSettings(updated, message: "")
     }
 
+    @objc private func recordCaptureShortcut() {
+        recordingTarget == .capture ? cancelRecording() : startRecording(.capture)
+    }
 
     @objc private func recordHistoryShortcut() {
-        if recordingTarget == .history {
-            stopRecording()
-            statusLabel.stringValue = ""
-            refreshUI()
-        } else {
-            startRecording(.history)
-        }
+        recordingTarget == .history ? cancelRecording() : startRecording(.history)
     }
 
     @objc private func recordImageKey() {
-        if recordingTarget == .imageKey {
-            stopRecording()
-            statusLabel.stringValue = ""
-            refreshUI()
-        } else {
-            startRecording(.imageKey)
-        }
+        recordingTarget == .imageKey ? cancelRecording() : startRecording(.imageKey)
     }
 
     @objc private func recordTextKey() {
-        if recordingTarget == .textKey {
-            stopRecording()
-            statusLabel.stringValue = ""
-            refreshUI()
-        } else {
-            startRecording(.textKey)
-        }
+        recordingTarget == .textKey ? cancelRecording() : startRecording(.textKey)
     }
 
     @objc private func restoreDefaults() {
@@ -349,13 +678,6 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         updated.imageKey = .imageDefault
         updated.textKey = .textDefault
         applyUpdatedSettings(updated, message: "已恢复默认按键")
-    }
-
-    @objc private func togglePersistence() {
-        stopRecording()
-        var updated = settings
-        updated.imagePersistenceEnabled = (persistenceCheckbox.state == .on)
-        applyUpdatedSettings(updated, message: "")
     }
 
     private func applyUpdatedSettings(_ updated: NativeSettings, message: String) {
@@ -371,6 +693,14 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
             statusLabel.textColor = .systemRed
             statusLabel.stringValue = error.localizedDescription
         }
+    }
+
+    // MARK: - Key recording
+
+    private func cancelRecording() {
+        stopRecording()
+        statusLabel.stringValue = ""
+        refreshUI()
     }
 
     private func startRecording(_ target: RecordingTarget) {
