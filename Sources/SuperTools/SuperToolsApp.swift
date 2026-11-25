@@ -417,11 +417,14 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         notice.close()
         history?.window?.orderOut(nil)
         settingsPanel?.window?.orderOut(nil)
-        // A hotkey now also fires while this status menu is being tracked. Dismiss
-        // the menu before grabbing, or it ends up in the screenshot (and the menu
-        // tracking loop keeps the overlay from taking the keyboard).
+        // A hotkey can also fire while this status menu is being tracked. Dismiss
+        // the menu before grabbing, or it ends up in the screenshot.
+        // Deliberately no NSApp.deactivate() here: deactivating and then
+        // re-activating around the grab swapped the menu bar (and, on notched
+        // displays, the safe area) twice per trigger, which read as a
+        // whole-screen shake. Cancelling the menu tracking is enough; the
+        // overlay's key-settling loop acquires the keyboard on its own.
         statusItem?.menu?.cancelTrackingWithoutAnimation()
-        if NSApp.isActive { NSApp.deactivate() }
         guard ensureScreenRecordingPermission() else { return }
         overlay?.present()
     }

@@ -160,9 +160,15 @@ final class CanvasView: NSView {
         let pillSize = instructionSurface.fittingSize
         let pillWidth = min(max(pillSize.width, 160), max(160, bounds.width - 24))
         let pillHeight = max(pillSize.height, 30)
+        // The pill is centred horizontally, so on a notched display the fixed
+        // 20 pt top margin puts it right behind the camera housing. Drop it
+        // below the screen's safe area instead; displays without a notch
+        // report a zero inset and keep the original margin.
+        let topInset = NSScreen.screens.first(where: { $0.frame == displayFrame })?.safeAreaInsets.top ?? 0
+        let topMargin = max(20, topInset + 6)
         instructionSurface.frame = CGRect(
             x: (bounds.width - pillWidth) / 2,
-            y: bounds.height - pillHeight - 20,
+            y: bounds.height - pillHeight - topMargin,
             width: pillWidth,
             height: pillHeight
         )
