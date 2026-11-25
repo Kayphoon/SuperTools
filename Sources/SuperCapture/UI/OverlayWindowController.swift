@@ -146,6 +146,30 @@ public final class OverlayWindowController {
     /// flickered whenever the overlay opened. An `.accessory` process can still own
     /// the key window, so activation plus `makeKey` is enough.
     private func present(_ frameCount: Int) {
+        // Activate first and hold the panels back until activation has
+        // landed. Showing the frozen frames immediately and letting the
+        // activation (and its menu bar swap on every display) land
+        // ~400 ms later made each trigger two staggered visual events,
+        // which read as a whole-screen shake; other capture tools, which
+        // present as one transition, do not do this. The grab is already
+        // complete at this point, so activating now cannot contaminate it
+        // the way activating before the grab did.
+        NSApp.activate(ignoringOtherApps: true)
+        showPanels(frameCount, attempt: 0)
+    }
+
+    /// Order the panels front once the app is active, so the frozen frame,
+    /// the dim and the menu bar change arrive as a single transition. Falls
+    /// back to showing anyway after ~400 ms so a stuck activation can never
+    /// leave a capture session invisible.
+    private func showPanels(_ frameCount: Int, attempt: Int) {
+        guard isPresented else { return }
+        if !NSApp.isActive && attempt < 20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+                self?.showPanels(frameCount, attempt: attempt + 1)
+            }
+            return
+        }
         for panel in panels {
             (panel.contentView as? CanvasView)?.refresh()
             // Re-assert the level: a window that was ordered out and back can come
@@ -153,7 +177,6 @@ public final class OverlayWindowController {
             panel.level = .screenSaver
             panel.orderFrontRegardless()
         }
-        NSApp.activate(ignoringOtherApps: true)
         let mouse = NSEvent.mouseLocation
         let activePanel = panels.first(where: { $0.frame.contains(mouse) }) ?? panels.first
         activePanel?.makeKeyAndOrderFront(nil)
@@ -161,7 +184,7 @@ public final class OverlayWindowController {
         // Activation lands a few hundred milliseconds later and clears the key window
         // on the way, so the panel has to be re-keyed until it sticks.
         settleKeyWindow(activePanel)
-        Diagnostics.log("overlay: shown frames=\(frameCount) active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue)")
+        Diagnostics.log("overlay: shown frames=\(frameCount) active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue) waited=\(attempt * 20)ms")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             Diagnostics.log("overlay: +400ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true)")
         }
