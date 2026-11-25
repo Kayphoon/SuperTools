@@ -21,6 +21,7 @@ public final class OverlayWindowController {
     private var annotations: [CaptureAnnotation] = []
     private var pendingAnnotation: CaptureAnnotation?
     private var scrollCapture: ScrollCaptureController?
+    private let sessionKeys = SessionHotKeys()
     private var generation = 0
     private var isPresented = false
     private let grabber = ScreenGrabber()
@@ -141,35 +142,15 @@ public final class OverlayWindowController {
 
     /// Put the already-grabbed frames on screen and take the keyboard.
     ///
-    /// Deliberately does not change the activation policy: promoting to `.regular`
-    /// makes the system draw a Dock tile and a real menu bar for this process, which
-    /// flickered whenever the overlay opened. An `.accessory` process can still own
-    /// the key window, so activation plus `makeKey` is enough.
+    /// The app is deliberately NOT activated. Activation is what made
+    /// Stage Manager animate a full app switch on every capture — the
+    /// whole-screen shake — and it swapped the menu bar under the frozen
+    /// frames besides. The panels are non-activating, so they can be key
+    /// and receive keystrokes while the front app keeps its activation;
+    /// Escape and the confirm keys are additionally registered as Carbon
+    /// session hotkeys (see `SessionHotKeys`) so they never depend on
+    /// panel key routing alone.
     private func present(_ frameCount: Int) {
-        // Activate first and hold the panels back until activation has
-        // landed. Showing the frozen frames immediately and letting the
-        // activation (and its menu bar swap on every display) land
-        // ~400 ms later made each trigger two staggered visual events,
-        // which read as a whole-screen shake; other capture tools, which
-        // present as one transition, do not do this. The grab is already
-        // complete at this point, so activating now cannot contaminate it
-        // the way activating before the grab did.
-        NSApp.activate(ignoringOtherApps: true)
-        showPanels(frameCount, attempt: 0)
-    }
-
-    /// Order the panels front once the app is active, so the frozen frame,
-    /// the dim and the menu bar change arrive as a single transition. Falls
-    /// back to showing anyway after ~400 ms so a stuck activation can never
-    /// leave a capture session invisible.
-    private func showPanels(_ frameCount: Int, attempt: Int) {
-        guard isPresented else { return }
-        if !NSApp.isActive && attempt < 20 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-                self?.showPanels(frameCount, attempt: attempt + 1)
-            }
-            return
-        }
         for panel in panels {
             (panel.contentView as? CanvasView)?.refresh()
             // Re-assert the level: a window that was ordered out and back can come
@@ -179,51 +160,76 @@ public final class OverlayWindowController {
         }
         let mouse = NSEvent.mouseLocation
         let activePanel = panels.first(where: { $0.frame.contains(mouse) }) ?? panels.first
-        activePanel?.makeKeyAndOrderFront(nil)
+        activePanel?.makeKey()
         activePanel?.makeFirstResponder(activePanel?.contentView)
-        // Activation lands a few hundred milliseconds later and clears the key window
-        // on the way, so the panel has to be re-keyed until it sticks.
         settleKeyWindow(activePanel)
-        Diagnostics.log("overlay: shown frames=\(frameCount) active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue) waited=\(attempt * 20)ms")
+        registerSessionKeys()
+        Diagnostics.log("overlay: shown frames=\(frameCount) active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true) policy=\(NSApp.activationPolicy().rawValue)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             Diagnostics.log("overlay: +400ms active=\(NSApp.isActive) key=\(activePanel?.isKeyWindow == true)")
         }
     }
 
-    /// Re-assert key-window status until activation has settled.
-    ///
-    /// Activation is asynchronous and clears the key window on the way, so a single
-    /// `makeKey` right after `activate` is always overwritten a moment later. Retry
-    /// for as long as the overlay is up and the panel still is not the key window.
-    /// Re-activating on each retry matters: when the request was made while another
-    /// process owned the menu (a status menu being tracked), macOS drops it, and
-    /// `makeKey` alone can never fix an application that was never activated.
+    /// Re-assert key-window status until the panel holds it. The panel is
+    /// non-activating, so this never activates the app; it only repeats
+    /// `makeKey` briefly in case the first call raced the window server,
+    /// and stops as soon as the panel is key.
     private func settleKeyWindow(_ panel: CapturePanel?, attempt: Int = 0) {
         guard isPresented, let panel else { return }
-        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-        if !panel.isKeyWindow {
-            panel.makeKey()
-            panel.makeFirstResponder(panel.contentView)
+        if panel.isKeyWindow { return }
+        panel.makeKey()
+        panel.makeFirstResponder(panel.contentView)
+        guard attempt < 10 else {
+            Diagnostics.log("overlay: settleKey end key=\(panel.isKeyWindow)")
+            return
         }
-        // Settled past the activation landing (~400 ms): stop instead of
-        // waking every 100 ms for the full two seconds — a stray
-        // re-activation mid-session swaps the menu bar for no benefit.
-        if attempt >= 8, NSApp.isActive, panel.isKeyWindow { return }
-        guard attempt < 20 else {
-            Diagnostics.log("overlay: settleKey end active=\(NSApp.isActive) key=\(panel.isKeyWindow)")
-            return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.settleKeyWindow(panel, attempt: attempt + 1)
         }
+    }
+
+    /// Carbon backstop for the keys that must work in every session:
+    /// Escape cancels, the confirm keys finish — during a scroll session
+    /// they drive the session instead. Registered for the session only
+    /// and dropped in `cancel()`, which every exit path runs.
+    private func registerSessionKeys() {
+        var keys: [(action: SessionHotKeys.Action, keyCode: Int, modifiers: Int)] = [
+            (.escape, 53, 0),
+            (.confirmText, 36, 512) // Shift+Return, the always-available text confirm
+        ]
+        keys.append((.confirmText, textKey.keyCode, textKey.modifiers))
+        keys.append((.confirmImage, imageKey.keyCode, imageKey.modifiers))
+        // Return and keypad Enter are interchangeable confirm keys.
+        if textKey.keyCode == 36 { keys.append((.confirmText, 76, textKey.modifiers)) }
+        if textKey.keyCode == 76 { keys.append((.confirmText, 36, textKey.modifiers)) }
+        if imageKey.keyCode == 36 { keys.append((.confirmImage, 76, imageKey.modifiers)) }
+        if imageKey.keyCode == 76 { keys.append((.confirmImage, 36, imageKey.modifiers)) }
+        sessionKeys.onAction = { [weak self] action in
+            guard let self else { return }
+            if let scrollCapture {
+                switch action {
+                case .escape: scrollCapture.cancel()
+                case .confirmImage, .confirmText: scrollCapture.finish()
+                }
+                return
+            }
+            switch action {
+            case .escape: cancel()
+            case .confirmImage: confirm(textOnly: false)
+            case .confirmText: confirm(textOnly: true)
+            }
+        }
+        sessionKeys.start(keys: keys)
     }
 
     private func preparePanels() {
         for panel in panels { panel.close() }
         panels = NSScreen.screens.map { screen in
-            // A plain borderless panel, not `.nonactivatingPanel`: the non-activating
-            // style refuses to become the key window, so the overlay would show but
-            // swallow no keystrokes (Return/Space/Esc all silently ignored).
-            let panel = CapturePanel(contentRect: screen.frame, styleMask: [.borderless],
+            // A non-activating panel: `CapturePanel` overrides `canBecomeKey`,
+            // so the panel can be the key window and take keystrokes without
+            // activating the app — the arrangement the scroll-capture panels
+            // in this codebase already use.
+            let panel = CapturePanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
             panel.isOpaque = false
             panel.backgroundColor = .clear
@@ -354,6 +360,7 @@ public final class OverlayWindowController {
     }
 
     public func cancel() {
+        sessionKeys.stop()
         if let scrollCapture {
             self.scrollCapture = nil
             scrollCapture.invalidate()

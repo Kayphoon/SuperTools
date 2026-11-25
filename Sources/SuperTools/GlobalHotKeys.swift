@@ -68,12 +68,16 @@ final class GlobalHotKeys {
             guard result == noErr else { return result }
             // Carbon dispatches application hotkeys on the application event loop.
             let keys = Unmanaged<GlobalHotKeys>.fromOpaque(userData).takeUnretainedValue()
+            var handled = false
             MainActor.assumeIsolated {
-                Diagnostics.log("hotkeys: fired id=\(identifier.id)")
-                if identifier.id == keys.captureID { keys.capture?() }
-                else if identifier.id == keys.historyID { keys.history?() }
+                if identifier.id == keys.captureID { keys.capture?(); handled = true }
+                else if identifier.id == keys.historyID { keys.history?(); handled = true }
+                if handled { Diagnostics.log("hotkeys: fired id=\(identifier.id)") }
             }
-            return noErr
+            // Not one of ours (e.g. a capture-session hotkey): pass it on so
+            // the handler that registered it gets its turn instead of the
+            // event being swallowed here.
+            return handled ? noErr : OSStatus(eventNotHandledErr)
         }, 1, &eventType, context, &handler)
         Diagnostics.log("hotkeys: InstallEventHandler status=\(status)")
         guard status == noErr else { throw HotKeyError.registration(status) }
