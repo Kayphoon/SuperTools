@@ -439,22 +439,25 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         left.orientation = .vertical
         left.alignment = .leading
         left.spacing = 2
+        left.translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = false
 
-        let inner = NSStackView(views: [left, control])
-        inner.orientation = .horizontal
-        inner.alignment = .centerY
-        inner.spacing = 12
-        left.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        control.setContentHuggingPriority(.required, for: .horizontal)
-
+        // No horizontal stack view on purpose: its hugging arbitration let
+        // the control (an NSSwitch especially) drift with the footnote's
+        // length instead of pinning to the trailing edge — visible in the
+        // offscreen renders as switches floating at four different x
+        // positions. Explicit constraints put every control on the card's
+        // right edge, whatever the label's length.
         let container = NSView()
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(inner)
+        container.addSubview(left)
+        container.addSubview(control)
         NSLayoutConstraint.activate([
-            inner.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
-            inner.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            inner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            inner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
+            left.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            left.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
+            left.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
+            left.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -12),
+            control.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            control.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             container.heightAnchor.constraint(greaterThanOrEqualToConstant: 46)
         ])
         return container
@@ -598,7 +601,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
 
         let head = NSStackView(views: [icon, text])
         head.orientation = .horizontal
-        head.alignment = .centerY
+        head.alignment = .top
         head.spacing = 14
 
         let credit = NSTextField(wrappingLabelWithString: "界面取 Kami（紙）的纸面与墨蓝：暖纸底、单一墨蓝强调、细线分隔。")
