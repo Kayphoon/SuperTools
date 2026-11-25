@@ -1,0 +1,19 @@
+name: Settings Screenshots
+
+on:
+  push:
+    branches: [screenshot/settings-render]
+
+jobs:
+  render:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render settings pages offscreen
+        env:
+          SCREENSHOT_DIR: ${{ github.workspace }}/screenshots
+        run: swift test --filter SettingsScreenshotTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: settings-screenshots
+          path: screenshots/

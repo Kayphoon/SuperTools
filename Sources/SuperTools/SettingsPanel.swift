@@ -655,6 +655,11 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         statusLabel.stringValue = "正在检查更新，结果会通过菜单与提示窗口告知。"
     }
 
+    /// Hook for the offscreen render harness on the screenshot branch.
+    func selectSectionForRender(_ index: Int) {
+        selectSection(Section(rawValue: index) ?? .general)
+    }
+
     private func selectSection(_ section: Section) {
         currentSection = section
         stopRecording()
