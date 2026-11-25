@@ -121,6 +121,65 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// One sidebar entry with hand-placed contents — a selection pill, the
+    /// symbol in a fixed 16 pt slot, the label at a fixed offset — so every
+    /// row lines up exactly. (An `NSButton` positions its image and title
+    /// with its own internal insets, which is what made the old sidebar
+    /// rows look scattered.)
+    private final class SidebarRowView: NSView {
+        let section: Section
+        var onSelect: ((Section) -> Void)?
+        var selectedFill: NSColor = .clear
+        private let pill = PaperView()
+        private let iconView = NSImageView()
+        private let titleLabel = NSTextField(labelWithString: "")
+
+        init(section: Section) {
+            self.section = section
+            super.init(frame: .zero)
+            pill.corner = 7
+            pill.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(pill)
+            iconView.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: section.title)
+            iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+            titleLabel.stringValue = section.title
+            titleLabel.font = .systemFont(ofSize: 13)
+            titleLabel.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(iconView)
+            addSubview(titleLabel)
+            NSLayoutConstraint.activate([
+                pill.topAnchor.constraint(equalTo: topAnchor),
+                pill.leadingAnchor.constraint(equalTo: leadingAnchor),
+                pill.trailingAnchor.constraint(equalTo: trailingAnchor),
+                pill.bottomAnchor.constraint(equalTo: bottomAnchor),
+                iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+                iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                iconView.widthAnchor.constraint(equalToConstant: 16),
+                iconView.heightAnchor.constraint(equalToConstant: 16),
+                titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
+                titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+                heightAnchor.constraint(equalToConstant: 30)
+            ])
+            setAccessibilityElement(true)
+            setAccessibilityRole(.button)
+            setAccessibilityLabel(section.title)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        func setSelected(_ selected: Bool) {
+            pill.fill = selected ? selectedFill : .clear
+            let color: NSColor = selected ? .white : .labelColor
+            titleLabel.textColor = color
+            iconView.contentTintColor = color
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            onSelect?(section)
+        }
+    }
+
     // MARK: - State
 
     private var settings: NativeSettings
@@ -130,7 +189,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
 
     // MARK: - Views
 
-    private var sectionButtons: [Section: NSButton] = [:]
+    private var sectionRows: [Section: SidebarRowView] = [:]
     private var sectionPages: [Section: NSView] = [:]
     private let contentContainer = NSView()
 
@@ -212,7 +271,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
             sectionPages[section] = page
         }
 
-        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.maximumNumberOfLines = 2
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -229,64 +288,59 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         let sidebar = PaperView()
         sidebar.fill = Self.sidebarPaper
 
+        // Header and menu rows share one leading edge: app icon, then the
+        // name and version stacked beside it, left-aligned like the rows.
         let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         let name = NSTextField(labelWithString: "SuperTools")
-        name.font = Self.serifFont(size: 16, weight: .bold)
-        name.alignment = .center
+        name.font = Self.serifFont(size: 15, weight: .bold)
         let versionText = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
             .map { "版本 \($0)" } ?? ""
         let version = NSTextField(labelWithString: versionText)
         version.font = .systemFont(ofSize: 11)
         version.textColor = .secondaryLabelColor
-        version.alignment = .center
 
-        let header = NSStackView(views: [icon, name, version])
-        header.orientation = .vertical
-        header.alignment = .centerX
-        header.spacing = 3
-        header.setCustomSpacing(8, after: icon)
+        let nameStack = NSStackView(views: [name, version])
+        nameStack.orientation = .vertical
+        nameStack.alignment = .leading
+        nameStack.spacing = 1
 
-        var buttons: [NSView] = []
+        let header = NSStackView(views: [icon, nameStack])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 9
+
+        var rows: [NSView] = []
         for section in Section.allCases {
-            let button = NSButton(title: section.title, target: self, action: #selector(sectionButtonClicked(_:)))
-            button.tag = section.rawValue
-            button.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: section.title)
-            button.imagePosition = .imageLeading
-            button.bezelStyle = .recessed
-            button.isBordered = false
-            button.font = .systemFont(ofSize: 13, weight: .medium)
-            button.alignment = .left
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 7
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
-            sectionButtons[section] = button
-            buttons.append(button)
+            let row = SidebarRowView(section: section)
+            row.selectedFill = Self.inkFill
+            row.onSelect = { [weak self] selected in self?.selectSection(selected) }
+            sectionRows[section] = row
+            rows.append(row)
         }
-        let list = NSStackView(views: buttons)
+        let list = NSStackView(views: rows)
         list.orientation = .vertical
         list.alignment = .leading
-        list.spacing = 4
-        for button in buttons {
-            button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        list.spacing = 3
+        for row in rows {
+            row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
 
         let stack = NSStackView(views: [header, list])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 22
+        stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         list.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         sidebar.addSubview(stack)
         NSLayoutConstraint.activate([
-            // Leave room for the traffic lights above the app icon.
-            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 40),
+            // Same top line as the page titles; clears the traffic lights.
+            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 30),
             stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14)
         ])
@@ -297,11 +351,11 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private func buildPage(for section: Section) -> NSView {
         let page = NSView()
         let title = NSTextField(labelWithString: section.title)
-        title.font = Self.serifFont(size: 21, weight: .bold)
+        title.font = Self.serifFont(size: 20, weight: .bold)
         var views: [NSView] = [title]
         if !section.subtitle.isEmpty {
             let subtitle = NSTextField(wrappingLabelWithString: section.subtitle)
-            subtitle.font = .systemFont(ofSize: 12.5)
+            subtitle.font = .systemFont(ofSize: 12)
             subtitle.textColor = .secondaryLabelColor
             views.append(subtitle)
         }
@@ -368,35 +422,46 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     }
 
     /// Label on the left, control on the right, optional quiet footnote under
-    /// the label. This is the only row shape the window uses.
+    /// the label. This is the only row shape the window uses. Every row gets
+    /// the same vertical padding and minimum height, so controls sit on a
+    /// regular rhythm instead of wherever a wrapped footnote leaves them.
     private func row(label: String, footnote: String? = nil, control: NSView) -> NSView {
         let title = NSTextField(labelWithString: label)
-        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.font = .systemFont(ofSize: 13)
         var leftViews: [NSView] = [title]
         if let footnote {
             let note = NSTextField(wrappingLabelWithString: footnote)
-            note.font = .systemFont(ofSize: 11.5)
+            note.font = .systemFont(ofSize: 11)
             note.textColor = .secondaryLabelColor
             leftViews.append(note)
         }
         let left = NSStackView(views: leftViews)
         left.orientation = .vertical
         left.alignment = .leading
-        left.spacing = 3
+        left.spacing = 2
 
-        let container = NSStackView(views: [left, control])
-        container.orientation = .horizontal
-        container.alignment = .centerY
-        container.spacing = 12
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        let inner = NSStackView(views: [left, control])
+        inner.orientation = .horizontal
+        inner.alignment = .centerY
+        inner.spacing = 12
         left.setContentHuggingPriority(.defaultLow, for: .horizontal)
         control.setContentHuggingPriority(.required, for: .horizontal)
+
+        let container = NSView()
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
+            inner.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            inner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 46)
+        ])
         return container
     }
 
     private func keycap(_ label: NSTextField) -> NSView {
-        label.font = .monospacedSystemFont(ofSize: 12.5, weight: .semibold)
+        label.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
         label.alignment = .center
         let cap = PaperView()
         cap.fill = Self.keycap
@@ -405,28 +470,27 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         label.translatesAutoresizingMaskIntoConstraints = false
         cap.addSubview(label)
         NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: cap.topAnchor, constant: 3),
+            label.centerXAnchor.constraint(equalTo: cap.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: cap.centerYAnchor),
             label.leadingAnchor.constraint(equalTo: cap.leadingAnchor, constant: 9),
             label.trailingAnchor.constraint(equalTo: cap.trailingAnchor, constant: -9),
-            label.bottomAnchor.constraint(equalTo: cap.bottomAnchor, constant: -3),
+            cap.heightAnchor.constraint(equalToConstant: 24),
             cap.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
         ])
         return cap
     }
 
+    /// A real rounded-bezel button: the system owns its insets and title
+    /// baseline, which the previous hand-layered borderless buttons got
+    /// subtly wrong. The bezel color carries the Kami keycap tone instead.
     private func recordButton(_ button: NSButton, action: Selector) -> NSView {
         button.target = self
         button.action = action
-        button.bezelStyle = .recessed
-        button.isBordered = false
-        button.font = .systemFont(ofSize: 12, weight: .medium)
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 6
-        button.layer?.borderWidth = 1
-        button.layer?.borderColor = Self.hairline.cgColor
+        button.bezelStyle = .rounded
+        button.font = .systemFont(ofSize: 12)
+        button.bezelColor = Self.keycap
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 64).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
         return button
     }
 
@@ -479,16 +543,11 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
                    value: textKeyValueLabel, button: recordTextKeyButton, action: #selector(recordTextKey))
         ])
         let restore = NSButton(title: "恢复默认按键", target: self, action: #selector(restoreDefaults))
-        restore.bezelStyle = .recessed
-        restore.isBordered = false
-        restore.font = .systemFont(ofSize: 12, weight: .medium)
+        restore.bezelStyle = .rounded
+        restore.font = .systemFont(ofSize: 12)
+        restore.bezelColor = Self.keycap
         restore.contentTintColor = Self.ink
-        restore.wantsLayer = true
-        restore.layer?.cornerRadius = 6
-        restore.layer?.borderWidth = 1
-        restore.layer?.borderColor = Self.hairline.cgColor
         restore.translatesAutoresizingMaskIntoConstraints = false
-        restore.heightAnchor.constraint(equalToConstant: 26).isActive = true
         let restoreRow = NSStackView(views: [NSView(), restore])
         restoreRow.orientation = .horizontal
         return [global, actions, restoreRow]
@@ -515,21 +574,21 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
 
         let name = NSTextField(labelWithString: "SuperTools")
-        name.font = Self.serifFont(size: 19, weight: .bold)
+        name.font = Self.serifFont(size: 17, weight: .bold)
         let tagline = NSTextField(wrappingLabelWithString: "截图、标注、文字识别与剪贴板历史，全部在这台 Mac 上本地完成。")
-        tagline.font = .systemFont(ofSize: 12.5)
+        tagline.font = .systemFont(ofSize: 12)
         tagline.textColor = .secondaryLabelColor
 
         let repo = NSButton(title: "github.com/Kayphoon/SuperTools", target: self, action: #selector(openRepository))
         repo.bezelStyle = .inline
         repo.isBordered = false
-        repo.font = .systemFont(ofSize: 12.5, weight: .medium)
+        repo.font = .systemFont(ofSize: 12)
         repo.contentTintColor = Self.ink
 
         let check = NSButton(title: "检查更新…", target: self, action: #selector(checkUpdatesClicked))
         check.bezelStyle = .inline
         check.isBordered = false
-        check.font = .systemFont(ofSize: 12.5, weight: .medium)
+        check.font = .systemFont(ofSize: 12)
         check.contentTintColor = Self.ink
 
         let text = NSStackView(views: [name, tagline, repo, check])
@@ -543,7 +602,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         head.spacing = 14
 
         let credit = NSTextField(wrappingLabelWithString: "界面取 Kami（紙）的纸面与墨蓝：暖纸底、单一墨蓝强调、细线分隔。")
-        credit.font = .systemFont(ofSize: 11.5)
+        credit.font = .systemFont(ofSize: 11)
         credit.textColor = .secondaryLabelColor
 
         let container = PaperView()
@@ -582,27 +641,12 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         statusLabel.stringValue = "正在检查更新，结果会通过菜单与提示窗口告知。"
     }
 
-    @objc private func sectionButtonClicked(_ sender: NSButton) {
-        guard let section = Section(rawValue: sender.tag) else { return }
-        selectSection(section)
-    }
-
     private func selectSection(_ section: Section) {
         currentSection = section
         stopRecording()
         statusLabel.stringValue = ""
         for (key, page) in sectionPages { page.isHidden = key != section }
-        for (key, button) in sectionButtons {
-            let selected = key == section
-            button.layer?.backgroundColor = selected ? Self.inkFill.cgColor : NSColor.clear.cgColor
-            button.contentTintColor = selected ? .white : .labelColor
-            // Borderless buttons do not reliably tint their plain title, so set
-            // the title color explicitly for the ink-filled selected row.
-            button.attributedTitle = NSAttributedString(
-                string: key.title,
-                attributes: [.foregroundColor: selected ? NSColor.white : NSColor.labelColor,
-                             .font: NSFont.systemFont(ofSize: 13, weight: .medium)])
-        }
+        for (key, row) in sectionRows { row.setSelected(key == section) }
     }
 
     /// Re-apply the colors that live on button layers (snapshots of the
@@ -654,8 +698,11 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     }
 
     private func styleRecordButton(_ button: NSButton, active: Bool) {
-        button.layer?.borderColor = (active ? Self.ink : Self.hairline).cgColor
-        button.contentTintColor = active ? Self.ink : .labelColor
+        button.bezelColor = active ? Self.inkFill : Self.keycap
+        button.attributedTitle = NSAttributedString(
+            string: button.title,
+            attributes: [.foregroundColor: active ? NSColor.white : NSColor.labelColor,
+                         .font: NSFont.systemFont(ofSize: 12)])
     }
 
     // MARK: - Actions
