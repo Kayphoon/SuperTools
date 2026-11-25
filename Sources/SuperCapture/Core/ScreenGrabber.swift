@@ -31,7 +31,19 @@ public final class ScreenGrabber {
         }
         let screens = NSScreen.screens
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        let ownApplications = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        // Exclude only this app's capture-session panels, never the whole
+        // application. The panels sit at the screen-saver level and a scroll
+        // session grabs frames while its border and control panels are on
+        // screen, so they must stay out of the pixels; the app's ordinary
+        // windows (settings, history, update prompt — normal/floating
+        // level) are legitimate screenshot content like any other app's,
+        // and excluding the whole application made the settings window
+        // impossible to screenshot with SuperTools itself.
+        let ownSessionWindows = content.windows.filter {
+            $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier
+                && $0.windowLayer >= NSWindow.Level.screenSaver.rawValue
+        }
+        Diagnostics.log("grabber: excluding \(ownSessionWindows.count) own session window(s)")
         // One ScreenCaptureKit request per display, all in flight at once: a serial
         // loop made the second screen wait for the first even though the captures
         // are independent. The results are keyed by screen index so the frame order
@@ -42,7 +54,7 @@ public final class ScreenGrabber {
                       let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
                     throw CaptureError.displayUnavailable
                 }
-                let filter = SCContentFilter(display: display, excludingApplications: ownApplications, exceptingWindows: [])
+                let filter = SCContentFilter(display: display, excludingWindows: ownSessionWindows)
                 let configuration = SCStreamConfiguration()
                 // A Retina display reports its *point* size through CGDisplayPixelsWide.
                 // Asking ScreenCaptureKit for that count halves the resolution on every
