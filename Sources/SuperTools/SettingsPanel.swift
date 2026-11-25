@@ -421,6 +421,22 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         return container
     }
 
+    /// Secondary 11 pt text with loosened line height, for the footnotes
+    /// under row labels and the About credit. Chinese sentences at the
+    /// default leading read cramped once they wrap to a second line; ~1.3x
+    /// gives the lines room without changing the font size.
+    private func footnoteLabel(_ text: String) -> NSTextField {
+        let style = NSMutableParagraphStyle()
+        style.lineHeightMultiple = 1.3
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.attributedStringValue = NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.systemFont(ofSize: 11),
+                         .foregroundColor: NSColor.secondaryLabelColor,
+                         .paragraphStyle: style])
+        return label
+    }
+
     /// Label on the left, control on the right, optional quiet footnote under
     /// the label. This is the only row shape the window uses. Every row gets
     /// the same vertical padding and minimum height, so controls sit on a
@@ -430,10 +446,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         title.font = .systemFont(ofSize: 13)
         var leftViews: [NSView] = [title]
         if let footnote {
-            let note = NSTextField(wrappingLabelWithString: footnote)
-            note.font = .systemFont(ofSize: 11)
-            note.textColor = .secondaryLabelColor
-            leftViews.append(note)
+            leftViews.append(footnoteLabel(footnote))
         }
         let left = NSStackView(views: leftViews)
         left.orientation = .vertical
@@ -604,9 +617,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         head.alignment = .top
         head.spacing = 14
 
-        let credit = NSTextField(wrappingLabelWithString: "界面取 Kami（紙）的纸面与墨蓝：暖纸底、单一墨蓝强调、细线分隔。")
-        credit.font = .systemFont(ofSize: 11)
-        credit.textColor = .secondaryLabelColor
+        let credit = footnoteLabel("界面取 Kami（紙）的纸面与墨蓝：暖纸底、单一墨蓝强调、细线分隔。")
 
         let container = PaperView()
         container.fill = Self.card
