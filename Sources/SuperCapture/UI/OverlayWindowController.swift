@@ -182,6 +182,10 @@ public final class OverlayWindowController {
             panel.makeKey()
             panel.makeFirstResponder(panel.contentView)
         }
+        // Settled past the activation landing (~400 ms): stop instead of
+        // waking every 100 ms for the full two seconds — a stray
+        // re-activation mid-session swaps the menu bar for no benefit.
+        if attempt >= 8, NSApp.isActive, panel.isKeyWindow { return }
         guard attempt < 20 else {
             Diagnostics.log("overlay: settleKey end active=\(NSApp.isActive) key=\(panel.isKeyWindow)")
             return }
