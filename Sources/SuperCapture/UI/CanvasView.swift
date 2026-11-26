@@ -205,9 +205,7 @@ final class CanvasView: NSView {
                 path.lineWidth = annotation.lineWidth
                 path.stroke()
             case .mosaic:
-                // A solid preview keeps the sensitive region hidden even while dragging.
-                NSColor.black.setFill()
-                rect.fill()
+                drawMosaicPreview(annotation, in: context)
             }
         }
         context.restoreGState()
@@ -223,6 +221,42 @@ final class CanvasView: NSView {
             NSColor.black.setStroke()
             square.frame()
         }
+    }
+
+    /// Live mosaic preview: pixelate the frozen frame exactly the way the
+    /// renderer will (same 16 px sampling), so what the user sees while
+    /// dragging is what the export contains. The old solid-black preview
+    /// read as a bug — there was no way to judge coverage or block size
+    /// until after confirming. Falls back to the black fill if the
+    /// pixelation cannot be produced, so a marked region is never shown
+    /// unredacted.
+    private func drawMosaicPreview(_ annotation: CaptureAnnotation, in context: CGContext) {
+        let fallback = local(annotation.rect)
+        guard let image,
+              let crop = image.cropping(to: SelectionGeometry.pixels(
+                for: annotation.rect, screen: displayFrame, width: image.width, height: image.height)),
+              let small = CGContext(data: nil, width: max(1, crop.width / 16),
+                                    height: max(1, crop.height / 16), bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            NSColor.black.setFill()
+            fallback.fill()
+            return
+        }
+        small.interpolationQuality = .low
+        small.draw(crop, in: CGRect(x: 0, y: 0, width: small.width, height: small.height))
+        guard let mosaic = small.makeImage() else {
+            NSColor.black.setFill()
+            fallback.fill()
+            return
+        }
+        // Draw only the part of the annotation this display actually shows;
+        // the crop above is that same part, so the two stay aligned.
+        let visible = annotation.rect.intersection(displayFrame)
+        context.saveGState()
+        context.interpolationQuality = .none
+        context.draw(mosaic, in: local(visible))
+        context.restoreGState()
     }
 
     private func local(_ rect: CGRect) -> CGRect {
