@@ -75,6 +75,52 @@ struct ClipboardTests {
         }
     }
 
+    @Test func testCustomLimitsTrimAndSetLimitsTightensLive() async throws {
+        try await MainActor.run {
+            let directory = temporaryDirectory()
+            defer { cleanup(directory) }
+            let store = try ClipboardStore(directory: directory, imageLimit: 5, textLimit: 30)
+            for number in 0..<35 { store.recordText("note \(number)") }
+            #expect(store.entries.filter { $0.kind == .text }.count == 30)
+            #expect(store.entries.first?.text == "note 34")
+            for number in 0..<8 { try store.recordImage(image(number)) }
+            #expect(store.entries.filter { $0.kind == .image }.count == 5)
+            try store.setLimits(imageLimit: 5, textLimit: 20)
+            let texts = store.entries.filter { $0.kind == .text }
+            #expect(texts.count == 20)
+            #expect(texts.first?.text == "note 34")
+            #expect(texts.last?.text == "note 15")
+        }
+    }
+
+    @Test func testRaisedLimitsSurvivePersistenceRestoreAndReportUsage() async throws {
+        try await MainActor.run {
+            let directory = temporaryDirectory()
+            defer { cleanup(directory) }
+            let store = try ClipboardStore(directory: directory, textLimit: 300)
+            try store.setImagePersistenceEnabled(true)
+            for number in 0..<230 { store.recordText("bulk \(number)") }
+            let usage = store.storageUsage()
+            #expect(usage.textEntries == 230)
+            #expect(usage.diskBytes > 0)
+            // 230 saved rows exceed the old fixed 225-row restore guard; the
+            // guard now follows the configured limits.
+            let restored = try ClipboardStore(directory: directory, textLimit: 300)
+            #expect(restored.entries.count == 230)
+        }
+    }
+
+    @Test func testClipboardLimitsDecodeWithDefaultsAndClamping() throws {
+        let legacy = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        #expect(legacy.clipboardImageLimit == ClipboardLimits.defaultImages)
+        #expect(legacy.clipboardTextLimit == ClipboardLimits.defaultTexts)
+        let custom = try JSONDecoder().decode(
+            NativeSettings.self,
+            from: Data(#"{"clipboardImageLimit": 5000, "clipboardTextLimit": 40}"#.utf8))
+        #expect(custom.clipboardImageLimit == ClipboardLimits.imageRange.upperBound)
+        #expect(custom.clipboardTextLimit == 40)
+    }
+
     @Test func testSensitivePasteboardsAreIgnoredIncludingMarkersOnAnotherItem() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()
