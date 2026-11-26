@@ -235,6 +235,9 @@ public final class OverlayWindowController {
             // in this codebase already use.
             let panel = CapturePanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
+            // This panel displays a frozen desktop. AppKit's window zoom would
+            // momentarily shrink the entire desktop image as the panel appears.
+            panel.animationBehavior = .none
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
