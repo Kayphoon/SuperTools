@@ -30,7 +30,7 @@ enum UpdateState: Equatable {
     case upToDate
     case available(String)    // newer version found, not downloaded yet
     case downloading(String)
-    case ready(String)        // downloaded and verified, waiting for the user
+    case ready(String)        // downloaded and verified, install scheduled
     case installing
     case failed(String)
 }
@@ -60,18 +60,20 @@ enum UpdateError: LocalizedError {
 /// The update pipeline the settings page promises: check GitHub Releases on
 /// launch and once a day, download a newer release in the background, verify
 /// it (release sha256, bundle identity, code signature, signing-identity
-/// continuity), stage it under the caches directory — and stop there.
-/// Installing is a separate explicit step (`installReady`) that only runs
-/// after the user confirms; nothing here ever replaces the app on its own.
+/// continuity), stage it under the caches directory — and then install it
+/// automatically (the user's call on 2026-11-26: no confirmation prompt).
+/// The one exception: while a capture session is on screen the install
+/// waits, so an update never kills an in-progress screenshot.
 @MainActor
 final class Updater {
     private(set) var state: UpdateState = .idle {
         didSet { if state != oldValue { onStateChange?(state) } }
     }
     var onStateChange: ((UpdateState) -> Void)?
-    /// Fired once per version when a verified update is staged and the user
-    /// should be asked whether to install it.
-    var onReadyToInstall: ((String) -> Void)?
+    /// Consulted before an automatic install replaces the app. The delegate
+    /// returns false while a capture session is on screen; the install then
+    /// retries every 30 s until the gate passes. Nil means always ready.
+    var installGate: (() -> Bool)?
     /// User-initiated checks report their quiet outcomes; automatic ones don't.
     var onUpToDate: (() -> Void)?
     var onCheckFailed: ((String) -> Void)?
@@ -115,7 +117,8 @@ final class Updater {
     private var pending: PendingRelease?
     private var timer: Timer?
     private var work: Task<Void, Never>?
-    private var promptedVersion: String?
+    private var installTimer: Timer?
+    private var pendingInstallVersion: String?
 
     init(currentVersion: String = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
          stagingRoot: URL? = nil,
@@ -149,6 +152,8 @@ final class Updater {
     func stop() {
         timer?.invalidate()
         timer = nil
+        installTimer?.invalidate()
+        installTimer = nil
         work?.cancel()
         work = nil
     }
@@ -199,7 +204,7 @@ final class Updater {
             }
             if let staged = stagedVersion(), staged == remote, stagedAppURL(version: remote) != nil {
                 state = .ready(remote)
-                promptIfNeeded(for: remote)
+                scheduleInstall(for: remote)
                 return
             }
             guard let zip = release.assets.first(where: { $0.name == Self.zipName }),
@@ -258,7 +263,7 @@ final class Updater {
             try marker.write(to: directory.appendingPathComponent("ready.json"), options: .atomic)
             pruneOtherVersions(keeping: pending.version)
             state = .ready(pending.version)
-            promptIfNeeded(for: pending.version)
+            scheduleInstall(for: pending.version)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             state = .failed(message)
@@ -291,9 +296,36 @@ final class Updater {
         return result.output.split(separator: "\n").first { $0.hasPrefix("Authority=") }.map(String.init)
     }
 
-    // MARK: - Install (explicit user confirmation only)
+    // MARK: - Install (automatic once a verified update is staged)
 
-    func installReady() {
+    /// Schedules the staged update for installation. Installs immediately
+    /// unless the gate reports a capture session in progress, in which case
+    /// it retries every 30 s — a version is only ever installed once, and a
+    /// newer staged version supersedes a waiting one.
+    private func scheduleInstall(for version: String) {
+        pendingInstallVersion = version
+        attemptInstall()
+    }
+
+    private func attemptInstall() {
+        installTimer?.invalidate()
+        installTimer = nil
+        guard let version = pendingInstallVersion,
+              case .ready(let ready) = state, ready == version else {
+            pendingInstallVersion = nil
+            return
+        }
+        if let installGate, !installGate() {
+            installTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.attemptInstall() }
+            }
+            return
+        }
+        pendingInstallVersion = nil
+        installReady()
+    }
+
+    private func installReady() {
         guard case .ready(let version) = state, let stagedApp = stagedAppURL(version: version) else { return }
         let target = Bundle.main.bundleURL
         let fileManager = FileManager.default
@@ -362,7 +394,7 @@ final class Updater {
         }
         if stagedAppURL(version: version) != nil {
             state = .ready(version)
-            promptIfNeeded(for: version)
+            scheduleInstall(for: version)
         }
     }
 
@@ -378,12 +410,6 @@ final class Updater {
         for entry in entries where !entry.hasPrefix("install-") {
             try? FileManager.default.removeItem(at: stagingRoot.appendingPathComponent(entry))
         }
-    }
-
-    private func promptIfNeeded(for version: String) {
-        guard promptedVersion != version else { return }
-        promptedVersion = version
-        onReadyToInstall?(version)
     }
 
     // MARK: - Network & process plumbing

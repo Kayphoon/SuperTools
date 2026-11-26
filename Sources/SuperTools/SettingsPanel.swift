@@ -540,7 +540,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
                 footnote: "启动时与每天一次，向 GitHub 查询是否有新版本发布。",
                 control: autoCheckSwitch),
             row(label: "自动下载更新",
-                footnote: "发现新版本后在后台下载并校验完整性；安装永远等你手动确认。",
+                footnote: "发现新版本后在后台下载、校验并自动安装；正在截图时会等截图结束再装。",
                 control: autoDownloadSwitch)
         ])
     }
@@ -652,7 +652,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     @objc private func checkUpdatesClicked() {
         onCheckUpdates?()
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.stringValue = "正在检查更新，结果会通过菜单与提示窗口告知。"
+        statusLabel.stringValue = "正在检查更新，有新版本时会自动下载并安装。"
     }
 
     private func selectSection(_ section: Section) {

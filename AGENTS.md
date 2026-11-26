@@ -53,7 +53,7 @@
 6. **自动更新边界**：
    - 更新器仅在独立模式运行，`--hosted` 下不启动、不检查、不下载。
    - 更新来源只认 `Kayphoon/SuperTools` 的 GitHub Releases 最新版；安装包必须依次通过 Release `.sha256` 核对、Bundle ID 与版本核对、`codesign --verify --deep --strict`，且当前应用为非 ad-hoc 签名时新版的第一条 `Authority=` 必须与当前应用一致，任一不过即丢弃暂存。
-   - **安装永远需要用户显式确认**：自动检查与自动下载最多把已校验的更新暂存到 `~/Library/Caches/com.supertools.app/updates/` 并弹出提示窗口，不得在无确认时替换应用包。替换由辅助脚本在主进程退出后完成，失败回滚旧包。
+   - **安装全自动**（用户 2026-11-26 决定，取代原先的手动确认）：已校验的更新暂存到 `~/Library/Caches/com.supertools.app/updates/` 后自动替换应用包，不再等用户确认；唯一例外是截图/长截图会话进行中时，安装延后到会话结束（`Updater.installGate`，每 30 秒重试）。替换由辅助脚本在主进程退出后完成，失败回滚旧包。
 
 ## 验证
 
