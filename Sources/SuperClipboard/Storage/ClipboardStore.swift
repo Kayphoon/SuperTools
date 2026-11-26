@@ -14,10 +14,32 @@ public struct ClipboardEntry {
     public internal(set) var sourceBundleID: String? = nil
 }
 
+/// Adjustable history caps: the long-standing 25 images / 200 texts are the
+/// defaults, and the settings window may move them inside these ranges. One
+/// source of truth — the store clamps with the same helpers the settings
+/// layer decodes with, so a hand-edited settings file cannot push the store
+/// past the ranges either.
+public enum ClipboardLimits {
+    public static let imageRange = 5...100
+    public static let textRange = 20...1000
+    public static let defaultImages = 25
+    public static let defaultTexts = 200
+
+    public static func clampedImages(_ value: Int) -> Int {
+        min(max(value, imageRange.lowerBound), imageRange.upperBound)
+    }
+
+    public static func clampedTexts(_ value: Int) -> Int {
+        min(max(value, textRange.lowerBound), textRange.upperBound)
+    }
+}
+
 @MainActor
 public final class ClipboardStore {
     public private(set) var entries: [ClipboardEntry] = []
     public private(set) var imagePersistenceEnabled = false
+    public private(set) var maxImageEntries: Int
+    public private(set) var maxTextEntries: Int
     public var onError: ((Error) -> Void)?
     private let cache: ImageDiskCache
     private let indexURL: URL
@@ -33,14 +55,18 @@ public final class ClipboardStore {
         let sourceBundleID: String?
     }
 
-    public init(directory: URL) throws {
+    public init(directory: URL,
+                imageLimit: Int = ClipboardLimits.defaultImages,
+                textLimit: Int = ClipboardLimits.defaultTexts) throws {
+        maxImageEntries = ClipboardLimits.clampedImages(imageLimit)
+        maxTextEntries = ClipboardLimits.clampedTexts(textLimit)
         cache = ImageDiskCache(directory: directory)
         indexURL = directory.appendingPathComponent("history.json")
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return }
         let size = try indexURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size <= 8 * 1024 * 1024 else { throw ClipboardError.invalidCache }
         let saved = try JSONDecoder().decode([SavedEntry].self, from: Data(contentsOf: indexURL))
-        guard saved.count <= 225 else { throw ClipboardError.invalidCache }
+        guard saved.count <= maxImageEntries + maxTextEntries else { throw ClipboardError.invalidCache }
         imagePersistenceEnabled = true
         var seen = Set<String>()
         for row in saved {
@@ -70,6 +96,33 @@ public final class ClipboardStore {
 
     private static func digest(_ string: String) -> String {
         SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Applies new history caps and reconciles immediately, so lowering a
+    /// limit trims the oldest entries (and their saved files) right away
+    /// instead of waiting for the next copy.
+    public func setLimits(imageLimit: Int, textLimit: Int) throws {
+        maxImageEntries = ClipboardLimits.clampedImages(imageLimit)
+        maxTextEntries = ClipboardLimits.clampedTexts(textLimit)
+        try reconcile()
+    }
+
+    public struct StorageUsage {
+        /// Bytes the clipboard cache directory actually occupies on disk
+        /// (saved originals plus the history index). Zero while image
+        /// persistence is off — history then lives in memory only.
+        public let diskBytes: Int
+        public let imageEntries: Int
+        public let savedImageFiles: Int
+        public let textEntries: Int
+    }
+
+    public func storageUsage() -> StorageUsage {
+        StorageUsage(
+            diskBytes: (try? cache.bytes()) ?? 0,
+            imageEntries: entries.filter { $0.kind == .image }.count,
+            savedImageFiles: entries.filter { $0.imageURL != nil }.count,
+            textEntries: entries.filter { $0.kind == .text }.count)
     }
 
     public func setImagePersistenceEnabled(_ enabled: Bool) throws {
@@ -188,10 +241,10 @@ public final class ClipboardStore {
             switch entry.kind {
             case .text:
                 textCount += 1
-                if textCount <= 200 { kept.append(entry) }
+                if textCount <= maxTextEntries { kept.append(entry) }
             case .image:
                 imageCount += 1
-                if imageCount <= 25 && entry.createdAt >= cutoff { kept.append(entry) }
+                if imageCount <= maxImageEntries && entry.createdAt >= cutoff { kept.append(entry) }
             }
         }
         entries = kept

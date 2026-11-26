@@ -1,5 +1,6 @@
 import AppKit
 import SuperCapture
+import SuperClipboard
 
 /// Settings window in the shape of a macOS Settings page — sidebar on the
 /// left, one calm page per section — dressed in the Kami （紙） design
@@ -206,11 +207,19 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private let autoCheckSwitch = NSSwitch()
     private let autoDownloadSwitch = NSSwitch()
     private let persistenceSwitch = NSSwitch()
+    private let imageLimitStepper = NSStepper()
+    private let textLimitStepper = NSStepper()
+    private let imageLimitValueLabel = NSTextField(labelWithString: "")
+    private let textLimitValueLabel = NSTextField(labelWithString: "")
+    private let storageBytesLabel = NSTextField(labelWithString: "")
+    private let storageCountsLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     var onApply: ((NativeSettings) throws -> Void)?
     /// Wired by the app delegate to the updater's manual check.
     var onCheckUpdates: (() -> Void)?
+    /// Wired by the app delegate to the clipboard store, for the storage row.
+    var storageProvider: (() -> ClipboardStore.StorageUsage?)?
 
     init(settings: NativeSettings = NativeSettings()) {
         self.settings = settings
@@ -569,13 +578,53 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         return [global, actions, restoreRow]
     }
 
+    /// Value label + stepper, the control shape of the two limit rows.
+    private func limitControl(stepper: NSStepper, value: NSTextField,
+                              range: ClosedRange<Int>, step: Int, action: Selector) -> NSView {
+        stepper.minValue = Double(range.lowerBound)
+        stepper.maxValue = Double(range.upperBound)
+        stepper.increment = Double(step)
+        stepper.valueWraps = false
+        stepper.target = self
+        stepper.action = action
+        value.font = .systemFont(ofSize: 12)
+        value.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [value, stepper])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        stack.alignment = .centerY
+        return stack
+    }
+
     private func buildClipboardCard() -> NSView {
         persistenceSwitch.target = self
         persistenceSwitch.action = #selector(togglePersistence)
+        storageBytesLabel.font = .systemFont(ofSize: 13)
+        storageBytesLabel.alignment = .right
+        storageCountsLabel.font = .systemFont(ofSize: 11)
+        storageCountsLabel.textColor = .secondaryLabelColor
+        storageCountsLabel.alignment = .right
+        let storageStack = NSStackView(views: [storageBytesLabel, storageCountsLabel])
+        storageStack.orientation = .vertical
+        storageStack.alignment = .trailing
+        storageStack.spacing = 2
         return card(rows: [
             row(label: "保存图片历史到磁盘缓存",
-                footnote: "最多 25 张 / 7 天 / 50 MB，缓存目录权限 0700。关闭后立即删除缓存；不开启时内存里只保留 128 px 缩略图与识别文本。",
+                footnote: "张数按下方「图片保留数量」，另有 7 天 / 50 MB 上限，缓存目录权限 0700。关闭后立即删除缓存；不开启时内存里只保留 128 px 缩略图与识别文本。",
                 control: persistenceSwitch),
+            row(label: "图片保留数量",
+                footnote: "内存历史与磁盘缓存共用这个上限，超出的从最旧开始淘汰。调小后立即裁剪。",
+                control: limitControl(stepper: imageLimitStepper, value: imageLimitValueLabel,
+                                      range: ClipboardLimits.imageRange, step: 5,
+                                      action: #selector(imageLimitChanged))),
+            row(label: "文本保留数量",
+                footnote: "调小后立即裁剪最旧的文本记录。",
+                control: limitControl(stepper: textLimitStepper, value: textLimitValueLabel,
+                                      range: ClipboardLimits.textRange, step: 10,
+                                      action: #selector(textLimitChanged))),
+            row(label: "存储占用",
+                footnote: "磁盘缓存目录的实际大小（含历史索引）。未开启磁盘缓存时不占磁盘，历史只在内存里。",
+                control: storageStack),
             row(label: "隐私",
                 footnote: "被标记为隐藏或临时类型的复制内容（例如来自密码管理器）不会进入历史。剪贴板内容不离开这台 Mac。",
                 control: NSView())
@@ -661,6 +710,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         statusLabel.stringValue = ""
         for (key, page) in sectionPages { page.isHidden = key != section }
         for (key, row) in sectionRows { row.setSelected(key == section) }
+        if section == .clipboard { refreshStorage() }
     }
 
     /// Re-apply the colors that live on button layers (snapshots of the
@@ -709,6 +759,25 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         autoDownloadSwitch.state = settings.autoDownloadUpdates ? .on : .off
         autoDownloadSwitch.isEnabled = settings.autoCheckUpdates
         persistenceSwitch.state = settings.imagePersistenceEnabled ? .on : .off
+        imageLimitStepper.intValue = Int32(settings.clipboardImageLimit)
+        textLimitStepper.intValue = Int32(settings.clipboardTextLimit)
+        imageLimitValueLabel.stringValue = "\(settings.clipboardImageLimit) 张"
+        textLimitValueLabel.stringValue = "\(settings.clipboardTextLimit) 条"
+        refreshStorage()
+    }
+
+    /// The storage row reads the store live; it refreshes with every
+    /// refreshUI (present, apply, section switch via refreshTheme) so the
+    /// number on screen is never the one from before a toggle or a trim.
+    private func refreshStorage() {
+        guard let usage = storageProvider?() else {
+            storageBytesLabel.stringValue = "—"
+            storageCountsLabel.stringValue = ""
+            return
+        }
+        storageBytesLabel.stringValue = ByteCountFormatter.string(
+            fromByteCount: Int64(usage.diskBytes), countStyle: .file)
+        storageCountsLabel.stringValue = "图片 \(usage.imageEntries) 条 · 文本 \(usage.textEntries) 条 · 原图已存 \(usage.savedImageFiles) 张"
     }
 
     private func styleRecordButton(_ button: NSButton, active: Bool) {
@@ -741,6 +810,20 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         stopRecording()
         var updated = settings
         updated.imagePersistenceEnabled = (persistenceSwitch.state == .on)
+        applyUpdatedSettings(updated, message: "")
+    }
+
+    @objc private func imageLimitChanged() {
+        stopRecording()
+        var updated = settings
+        updated.clipboardImageLimit = ClipboardLimits.clampedImages(Int(imageLimitStepper.intValue))
+        applyUpdatedSettings(updated, message: "")
+    }
+
+    @objc private func textLimitChanged() {
+        stopRecording()
+        var updated = settings
+        updated.clipboardTextLimit = ClipboardLimits.clampedTexts(Int(textLimitStepper.intValue))
         applyUpdatedSettings(updated, message: "")
     }
 

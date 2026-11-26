@@ -90,7 +90,9 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             let cacheRoot = caches.appendingPathComponent("com.supertools.app", isDirectory: true)
             let storeDirectory = cacheRoot.appendingPathComponent("clipboard", isDirectory: true)
             Self.migrateLegacyCache(from: cacheRoot, into: storeDirectory)
-            let store = try ClipboardStore(directory: storeDirectory)
+            let store = try ClipboardStore(directory: storeDirectory,
+                                           imageLimit: settings.clipboardImageLimit,
+                                           textLimit: settings.clipboardTextLimit)
             self.store = store
             if hasPersistedSettings {
                 try store.setImagePersistenceEnabled(settings.imagePersistenceEnabled)
@@ -130,6 +132,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
                 self.updater = updater
             }
             settingsPanel.onCheckUpdates = { [weak self] in self?.updater?.checkNow(userInitiated: true) }
+            settingsPanel.storageProvider = { [weak store] in store?.storageUsage() }
             installMenu()
             observeShowMenuBarRequest()
             keys.capture = { [weak self] in self?.capture() }
@@ -179,6 +182,8 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         guard let store else { throw NativeSettingsError.unavailable }
         try configuration.validate()
         try keys.configure(capture: configuration.captureShortcut, history: configuration.historyShortcut) {
+            try store.setLimits(imageLimit: configuration.clipboardImageLimit,
+                                textLimit: configuration.clipboardTextLimit)
             try store.setImagePersistenceEnabled(configuration.imagePersistenceEnabled)
         }
         settings = configuration
