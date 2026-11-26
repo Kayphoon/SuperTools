@@ -21,6 +21,10 @@ public final class OverlayWindowController {
     private var annotations: [CaptureAnnotation] = []
     private var pendingAnnotation: CaptureAnnotation?
     private var scrollCapture: ScrollCaptureController?
+    /// True while any capture UI is on screen — the selection overlay or a
+    /// scroll session. The updater consults this before replacing the app,
+    /// so an automatic install never kills an in-progress capture.
+    public var isCaptureActive: Bool { isPresented || scrollCapture != nil }
     private let sessionKeys = SessionHotKeys()
     private var generation = 0
     private var isPresented = false

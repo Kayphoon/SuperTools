@@ -28,7 +28,6 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     private var history: HistoryPanel?
     private var settingsPanel: SettingsPanel?
     private var updater: Updater?
-    private var updatePrompt: UpdatePrompt?
     private let keys = GlobalHotKeys()
     private let ocr = OCRService()
     private let notice = CopyNotice()
@@ -123,7 +122,9 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             if !isHosted {
                 let updater = Updater()
                 updater.onStateChange = { [weak self] state in self?.updateStateChanged(state) }
-                updater.onReadyToInstall = { [weak self] version in self?.showUpdatePrompt(version: version) }
+                // Updates install themselves once verified; the gate keeps an
+                // install from replacing the app mid-capture.
+                updater.installGate = { [weak self] in !(self?.overlay?.isCaptureActive ?? false) }
                 updater.onUpToDate = { [weak self] in self?.announce("已是最新版本") }
                 updater.onCheckFailed = { [weak self] message in self?.announce(message) }
                 self.updater = updater
@@ -498,8 +499,8 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             updateItem.title = "正在下载 \(version)…"
             updateItem.isEnabled = false
         case .ready(let version):
-            updateItem.title = "安装新版本 \(version)…"
-            updateItem.isEnabled = true
+            updateItem.title = "新版本 \(version) 将自动安装"
+            updateItem.isEnabled = false
         case .installing:
             updateItem.title = "正在安装…"
             updateItem.isEnabled = false
@@ -509,24 +510,11 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func updateMenuClicked() {
         guard let updater else { return }
         switch updater.state {
-        case .ready(let version):
-            showUpdatePrompt(version: version)
         case .available:
             updater.downloadNow()
         default:
             updater.checkNow(userInitiated: true)
         }
-    }
-
-    private func showUpdatePrompt(version: String) {
-        if let updatePrompt {
-            updatePrompt.present()
-            return
-        }
-        let prompt = UpdatePrompt(version: version)
-        prompt.onInstall = { [weak self] in self?.updater?.installReady() }
-        updatePrompt = prompt
-        prompt.present()
     }
 
     private func captured(_ image: CGImage, textOnly: Bool) {
@@ -644,7 +632,6 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         monitor?.stop()
         keys.stop()
         updater?.stop()
-        updatePrompt?.close()
         history?.close()
         settingsPanel?.close()
         notice.close()
