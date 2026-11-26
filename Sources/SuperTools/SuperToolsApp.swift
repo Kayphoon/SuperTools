@@ -632,7 +632,6 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         monitor?.stop()
         keys.stop()
         updater?.stop()
-        updatePrompt?.close()
         history?.close()
         settingsPanel?.close()
         notice.close()
