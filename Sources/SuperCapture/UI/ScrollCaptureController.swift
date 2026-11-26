@@ -366,7 +366,16 @@ final class ScrollCaptureController {
         guard let previewView, let thumbnail = Self.thumbnail(from: canvasImage) else { return }
         previewView.image = NSImage(cgImage: thumbnail,
                                     size: NSSize(width: thumbnail.width, height: thumbnail.height))
-        let displayHeight = min(150, max(30, previewWidth * CGFloat(thumbnail.height) / CGFloat(thumbnail.width)))
+        // The preview is the only place the user can check the stitch, so
+        // let it grow well past the old 150 pt cap — up to 480 pt — but
+        // never taller than the space on the panel's side of the selection,
+        // so the controls stay on screen.
+        let aspectHeight = previewWidth * CGFloat(thumbnail.height) / CGFloat(thumbnail.width)
+        let chrome = (controlSurface?.fittingSize.height ?? 56) - (previewHeightConstraint?.constant ?? 36)
+        let room = panelBelowSelection ? selection.minY - displayFrame.minY
+                                       : displayFrame.maxY - selection.maxY
+        let cap = max(60, min(480, room - chrome - 26))
+        let displayHeight = min(cap, max(30, aspectHeight))
         if let constraint = previewHeightConstraint, abs(constraint.constant - displayHeight) > 2 {
             constraint.constant = displayHeight
             layoutControlPanel()
@@ -374,9 +383,10 @@ final class ScrollCaptureController {
     }
 
     /// Bounded downscale of the stitched canvas for the control-bar preview;
-    /// proportional, at most 300×600 px regardless of canvas size.
+    /// proportional, at most 600×1200 px regardless of canvas size, so the
+    /// enlarged preview stays crisp on Retina displays.
     private static func thumbnail(from image: CGImage) -> CGImage? {
-        let scale = min(300 / CGFloat(image.width), 600 / CGFloat(image.height), 1)
+        let scale = min(600 / CGFloat(image.width), 1200 / CGFloat(image.height), 1)
         let width = max(1, Int(CGFloat(image.width) * scale))
         let height = max(1, Int(CGFloat(image.height) * scale))
         guard let context = CGContext(data: nil, width: width, height: height,
