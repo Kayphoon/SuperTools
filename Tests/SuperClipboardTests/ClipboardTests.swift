@@ -203,7 +203,9 @@ struct ClipboardTests {
                 pasteboard.releaseGlobally()
                 cleanup(directory)
             }
-            let store = try ClipboardStore(directory: directory)
+            // A 25-entry cap stands in for the old per-kind image cap so
+            // the copied image is evicted by the 25 that follow it.
+            let store = try ClipboardStore(directory: directory, historyLimit: 25)
             let monitor = PasteboardMonitor(store: store, pasteboard: pasteboard)
             let id = try #require(try monitor.copyImage(image()))
             for number in 1...25 { try store.recordImage(image(number)) }
@@ -265,7 +267,9 @@ struct ClipboardTests {
         try await MainActor.run {
             let directory = temporaryDirectory()
             defer { cleanup(directory) }
-            let store = try ClipboardStore(directory: directory)
+            // A 25-entry cap stands in for the old per-kind image cap so
+            // the 26th image evicts the first, original file included.
+            let store = try ClipboardStore(directory: directory, historyLimit: 25)
             try store.setImagePersistenceEnabled(true)
             let firstID = try #require(try store.recordImage(image()))
             let firstURL = try #require(store.entries.first?.imageURL)
