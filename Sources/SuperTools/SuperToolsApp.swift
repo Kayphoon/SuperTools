@@ -91,8 +91,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
             let storeDirectory = cacheRoot.appendingPathComponent("clipboard", isDirectory: true)
             Self.migrateLegacyCache(from: cacheRoot, into: storeDirectory)
             let store = try ClipboardStore(directory: storeDirectory,
-                                           imageLimit: settings.clipboardImageLimit,
-                                           textLimit: settings.clipboardTextLimit)
+                                           historyLimit: settings.clipboardHistoryLimit)
             self.store = store
             if hasPersistedSettings {
                 try store.setImagePersistenceEnabled(settings.imagePersistenceEnabled)
@@ -182,8 +181,7 @@ final class CaptureAppDelegate: NSObject, NSApplicationDelegate {
         guard let store else { throw NativeSettingsError.unavailable }
         try configuration.validate()
         try keys.configure(capture: configuration.captureShortcut, history: configuration.historyShortcut) {
-            try store.setLimits(imageLimit: configuration.clipboardImageLimit,
-                                textLimit: configuration.clipboardTextLimit)
+            try store.setLimit(configuration.clipboardHistoryLimit)
             try store.setImagePersistenceEnabled(configuration.imagePersistenceEnabled)
         }
         settings = configuration
