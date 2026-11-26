@@ -44,13 +44,15 @@ struct ClipboardTests {
         }
     }
 
-    @Test func testDefaultImagesKeep25ThumbnailsWithoutCreatingFiles() async throws {
+    @Test func testDefaultImagesKeepThumbnailsWithoutCreatingFiles() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()
             defer { cleanup(directory) }
             let store = try ClipboardStore(directory: directory)
             for number in 0...25 { try store.recordImage(image(number)) }
-            #expect(store.entries.count == 25)
+            // No per-kind image cap anymore: all 26 sit under the shared
+            // 200-entry history limit.
+            #expect(store.entries.count == 26)
             #expect(store.entries.allSatisfy { $0.imageURL == nil })
             #expect(store.entries.first?.thumbnail?.width == 128)
             #expect(store.entries.first?.thumbnail?.height == 64)
@@ -75,50 +77,59 @@ struct ClipboardTests {
         }
     }
 
-    @Test func testCustomLimitsTrimAndSetLimitsTightensLive() async throws {
+    @Test func testUnifiedLimitCountsImagesAndTextsTogether() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()
             defer { cleanup(directory) }
-            let store = try ClipboardStore(directory: directory, imageLimit: 5, textLimit: 30)
+            let store = try ClipboardStore(directory: directory, historyLimit: 30)
             for number in 0..<35 { store.recordText("note \(number)") }
-            #expect(store.entries.filter { $0.kind == .text }.count == 30)
+            #expect(store.entries.count == 30)
             #expect(store.entries.first?.text == "note 34")
             for number in 0..<8 { try store.recordImage(image(number)) }
-            #expect(store.entries.filter { $0.kind == .image }.count == 5)
-            try store.setLimits(imageLimit: 5, textLimit: 20)
+            // One shared cap: the 8 images push the 8 oldest texts out.
+            #expect(store.entries.count == 30)
+            #expect(store.entries.filter { $0.kind == .image }.count == 8)
             let texts = store.entries.filter { $0.kind == .text }
-            #expect(texts.count == 20)
-            #expect(texts.first?.text == "note 34")
-            #expect(texts.last?.text == "note 15")
+            #expect(texts.count == 22)
+            #expect(texts.last?.text == "note 13")
+            try store.setLimit(20)
+            #expect(store.entries.count == 20)
+            #expect(store.entries.filter { $0.kind == .text }.last?.text == "note 23")
         }
     }
 
-    @Test func testRaisedLimitsSurvivePersistenceRestoreAndReportUsage() async throws {
+    @Test func testRaisedLimitSurvivesPersistenceRestoreAndReportUsage() async throws {
         try await MainActor.run {
             let directory = temporaryDirectory()
             defer { cleanup(directory) }
-            let store = try ClipboardStore(directory: directory, textLimit: 300)
+            let store = try ClipboardStore(directory: directory, historyLimit: 300)
             try store.setImagePersistenceEnabled(true)
             for number in 0..<230 { store.recordText("bulk \(number)") }
             let usage = store.storageUsage()
             #expect(usage.textEntries == 230)
             #expect(usage.diskBytes > 0)
             // 230 saved rows exceed the old fixed 225-row restore guard; the
-            // guard now follows the configured limits.
-            let restored = try ClipboardStore(directory: directory, textLimit: 300)
+            // guard is now a range-maximum sanity bound, and restoring under
+            // a lower cap trims instead of throwing.
+            let restored = try ClipboardStore(directory: directory, historyLimit: 300)
             #expect(restored.entries.count == 230)
+            let trimmed = try ClipboardStore(directory: directory, historyLimit: 100)
+            #expect(trimmed.entries.count == 100)
         }
     }
 
-    @Test func testClipboardLimitsDecodeWithDefaultsAndClamping() throws {
+    @Test func testClipboardLimitDecodesWithDefaultsAndClamping() throws {
         let legacy = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
-        #expect(legacy.clipboardImageLimit == ClipboardLimits.defaultImages)
-        #expect(legacy.clipboardTextLimit == ClipboardLimits.defaultTexts)
+        #expect(legacy.clipboardHistoryLimit == ClipboardLimits.defaultLimit)
+        // The short-lived per-kind keys are ignored, not carried over.
+        let perKind = try JSONDecoder().decode(
+            NativeSettings.self,
+            from: Data(#"{"clipboardImageLimit": 50, "clipboardTextLimit": 60}"#.utf8))
+        #expect(perKind.clipboardHistoryLimit == ClipboardLimits.defaultLimit)
         let custom = try JSONDecoder().decode(
             NativeSettings.self,
-            from: Data(#"{"clipboardImageLimit": 5000, "clipboardTextLimit": 40}"#.utf8))
-        #expect(custom.clipboardImageLimit == ClipboardLimits.imageRange.upperBound)
-        #expect(custom.clipboardTextLimit == 40)
+            from: Data(#"{"clipboardHistoryLimit": 5000}"#.utf8))
+        #expect(custom.clipboardHistoryLimit == ClipboardLimits.range.upperBound)
     }
 
     @Test func testSensitivePasteboardsAreIgnoredIncludingMarkersOnAnotherItem() async throws {
@@ -192,7 +203,9 @@ struct ClipboardTests {
                 pasteboard.releaseGlobally()
                 cleanup(directory)
             }
-            let store = try ClipboardStore(directory: directory)
+            // A 25-entry cap stands in for the old per-kind image cap so
+            // the copied image is evicted by the 25 that follow it.
+            let store = try ClipboardStore(directory: directory, historyLimit: 25)
             let monitor = PasteboardMonitor(store: store, pasteboard: pasteboard)
             let id = try #require(try monitor.copyImage(image()))
             for number in 1...25 { try store.recordImage(image(number)) }
@@ -254,7 +267,9 @@ struct ClipboardTests {
         try await MainActor.run {
             let directory = temporaryDirectory()
             defer { cleanup(directory) }
-            let store = try ClipboardStore(directory: directory)
+            // A 25-entry cap stands in for the old per-kind image cap so
+            // the 26th image evicts the first, original file included.
+            let store = try ClipboardStore(directory: directory, historyLimit: 25)
             try store.setImagePersistenceEnabled(true)
             let firstID = try #require(try store.recordImage(image()))
             let firstURL = try #require(store.entries.first?.imageURL)

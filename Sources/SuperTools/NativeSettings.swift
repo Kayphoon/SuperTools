@@ -97,10 +97,11 @@ struct NativeSettings: Codable, Equatable {
     var captureShortcut: NativeShortcut = .capture
     var historyShortcut: NativeShortcut = .history
     var imagePersistenceEnabled = false
-    /// History caps shown in the clipboard settings page; the store clamps
-    /// with the same ranges, so these can never exceed them in effect.
-    var clipboardImageLimit = ClipboardLimits.defaultImages
-    var clipboardTextLimit = ClipboardLimits.defaultTexts
+    /// The one history cap shown in the clipboard settings page (images and
+    /// texts counted together); the store clamps with the same range, so it
+    /// can never exceed it in effect. The short-lived per-kind keys from the
+    /// first cut of this feature are ignored on decode.
+    var clipboardHistoryLimit = ClipboardLimits.defaultLimit
     var imageKey: ActionKey = .imageDefault
     var textKey: ActionKey = .textDefault
     /// Paste the selected history entry straight into the app the panel was opened
@@ -127,7 +128,7 @@ struct NativeSettings: Codable, Equatable {
     // New fields must stay optional so a settings.json written by an older build
     // still loads instead of throwing away the user's hotkeys.
     private enum CodingKeys: String, CodingKey {
-        case captureShortcut, historyShortcut, imagePersistenceEnabled, clipboardImageLimit, clipboardTextLimit,
+        case captureShortcut, historyShortcut, imagePersistenceEnabled, clipboardHistoryLimit,
              imageKey, textKey, pasteOnSelect, hideMenuBarIcon, autoCheckUpdates, autoDownloadUpdates
     }
 
@@ -136,8 +137,7 @@ struct NativeSettings: Codable, Equatable {
     init(captureShortcut: NativeShortcut = .capture,
          historyShortcut: NativeShortcut = .history,
          imagePersistenceEnabled: Bool = false,
-         clipboardImageLimit: Int = ClipboardLimits.defaultImages,
-         clipboardTextLimit: Int = ClipboardLimits.defaultTexts,
+         clipboardHistoryLimit: Int = ClipboardLimits.defaultLimit,
          imageKey: ActionKey = .imageDefault,
          textKey: ActionKey = .textDefault,
          pasteOnSelect: Bool = false,
@@ -147,8 +147,7 @@ struct NativeSettings: Codable, Equatable {
         self.captureShortcut = captureShortcut
         self.historyShortcut = historyShortcut
         self.imagePersistenceEnabled = imagePersistenceEnabled
-        self.clipboardImageLimit = ClipboardLimits.clampedImages(clipboardImageLimit)
-        self.clipboardTextLimit = ClipboardLimits.clampedTexts(clipboardTextLimit)
+        self.clipboardHistoryLimit = ClipboardLimits.clamped(clipboardHistoryLimit)
         self.imageKey = imageKey
         self.textKey = textKey
         self.pasteOnSelect = pasteOnSelect
@@ -162,10 +161,8 @@ struct NativeSettings: Codable, Equatable {
         captureShortcut = try container.decodeIfPresent(NativeShortcut.self, forKey: .captureShortcut) ?? .capture
         historyShortcut = try container.decodeIfPresent(NativeShortcut.self, forKey: .historyShortcut) ?? .history
         imagePersistenceEnabled = try container.decodeIfPresent(Bool.self, forKey: .imagePersistenceEnabled) ?? false
-        clipboardImageLimit = ClipboardLimits.clampedImages(
-            try container.decodeIfPresent(Int.self, forKey: .clipboardImageLimit) ?? ClipboardLimits.defaultImages)
-        clipboardTextLimit = ClipboardLimits.clampedTexts(
-            try container.decodeIfPresent(Int.self, forKey: .clipboardTextLimit) ?? ClipboardLimits.defaultTexts)
+        clipboardHistoryLimit = ClipboardLimits.clamped(
+            try container.decodeIfPresent(Int.self, forKey: .clipboardHistoryLimit) ?? ClipboardLimits.defaultLimit)
         imageKey = try container.decodeIfPresent(ActionKey.self, forKey: .imageKey) ?? .imageDefault
         textKey = try container.decodeIfPresent(ActionKey.self, forKey: .textKey) ?? .textDefault
         pasteOnSelect = try container.decodeIfPresent(Bool.self, forKey: .pasteOnSelect) ?? false

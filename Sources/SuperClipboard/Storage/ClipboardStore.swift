@@ -14,23 +14,18 @@ public struct ClipboardEntry {
     public internal(set) var sourceBundleID: String? = nil
 }
 
-/// Adjustable history caps: the long-standing 25 images / 200 texts are the
-/// defaults, and the settings window may move them inside these ranges. One
-/// source of truth — the store clamps with the same helpers the settings
-/// layer decodes with, so a hand-edited settings file cannot push the store
-/// past the ranges either.
+/// One adjustable cap for the whole history — images and texts counted
+/// together, at the user's call (2026-11-26: no per-kind split). The
+/// long-standing text cap of 200 is the default. One source of truth — the
+/// store clamps with the same helper the settings layer decodes with, so a
+/// hand-edited settings file cannot push the store past the range either.
+/// Images keep their own disk rules (7 days / 50 MB) regardless of count.
 public enum ClipboardLimits {
-    public static let imageRange = 5...100
-    public static let textRange = 20...1000
-    public static let defaultImages = 25
-    public static let defaultTexts = 200
+    public static let range = 20...1000
+    public static let defaultLimit = 200
 
-    public static func clampedImages(_ value: Int) -> Int {
-        min(max(value, imageRange.lowerBound), imageRange.upperBound)
-    }
-
-    public static func clampedTexts(_ value: Int) -> Int {
-        min(max(value, textRange.lowerBound), textRange.upperBound)
+    public static func clamped(_ value: Int) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 }
 
@@ -38,8 +33,7 @@ public enum ClipboardLimits {
 public final class ClipboardStore {
     public private(set) var entries: [ClipboardEntry] = []
     public private(set) var imagePersistenceEnabled = false
-    public private(set) var maxImageEntries: Int
-    public private(set) var maxTextEntries: Int
+    public private(set) var maxEntries: Int
     public var onError: ((Error) -> Void)?
     private let cache: ImageDiskCache
     private let indexURL: URL
@@ -56,17 +50,18 @@ public final class ClipboardStore {
     }
 
     public init(directory: URL,
-                imageLimit: Int = ClipboardLimits.defaultImages,
-                textLimit: Int = ClipboardLimits.defaultTexts) throws {
-        maxImageEntries = ClipboardLimits.clampedImages(imageLimit)
-        maxTextEntries = ClipboardLimits.clampedTexts(textLimit)
+                historyLimit: Int = ClipboardLimits.defaultLimit) throws {
+        maxEntries = ClipboardLimits.clamped(historyLimit)
         cache = ImageDiskCache(directory: directory)
         indexURL = directory.appendingPathComponent("history.json")
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return }
         let size = try indexURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size <= 8 * 1024 * 1024 else { throw ClipboardError.invalidCache }
         let saved = try JSONDecoder().decode([SavedEntry].self, from: Data(contentsOf: indexURL))
-        guard saved.count <= maxImageEntries + maxTextEntries else { throw ClipboardError.invalidCache }
+        // Sanity bound against a corrupt index, not the live cap: a file
+        // written under a higher cap must still load after the cap is
+        // lowered — reconcile() below trims it to maxEntries.
+        guard saved.count <= ClipboardLimits.range.upperBound else { throw ClipboardError.invalidCache }
         imagePersistenceEnabled = true
         var seen = Set<String>()
         for row in saved {
@@ -98,12 +93,11 @@ public final class ClipboardStore {
         SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Applies new history caps and reconciles immediately, so lowering a
-    /// limit trims the oldest entries (and their saved files) right away
-    /// instead of waiting for the next copy.
-    public func setLimits(imageLimit: Int, textLimit: Int) throws {
-        maxImageEntries = ClipboardLimits.clampedImages(imageLimit)
-        maxTextEntries = ClipboardLimits.clampedTexts(textLimit)
+    /// Applies a new history cap and reconciles immediately, so lowering it
+    /// trims the oldest entries (and their saved files) right away instead
+    /// of waiting for the next copy.
+    public func setLimit(_ limit: Int) throws {
+        maxEntries = ClipboardLimits.clamped(limit)
         try reconcile()
     }
 
@@ -235,17 +229,12 @@ public final class ClipboardStore {
 
     private func reconcile() throws {
         let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
-        var textCount = 0, imageCount = 0
         var kept: [ClipboardEntry] = []
         for entry in entries {
-            switch entry.kind {
-            case .text:
-                textCount += 1
-                if textCount <= maxTextEntries { kept.append(entry) }
-            case .image:
-                imageCount += 1
-                if imageCount <= maxImageEntries && entry.createdAt >= cutoff { kept.append(entry) }
-            }
+            guard kept.count < maxEntries else { break }
+            // Image entries expire after 7 days, as before; texts do not.
+            if entry.kind == .image, entry.createdAt < cutoff { continue }
+            kept.append(entry)
         }
         entries = kept
         guard imagePersistenceEnabled else { return }

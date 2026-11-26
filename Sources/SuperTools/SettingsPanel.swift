@@ -207,10 +207,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
     private let autoCheckSwitch = NSSwitch()
     private let autoDownloadSwitch = NSSwitch()
     private let persistenceSwitch = NSSwitch()
-    private let imageLimitStepper = NSStepper()
-    private let textLimitStepper = NSStepper()
-    private let imageLimitValueLabel = NSTextField(labelWithString: "")
-    private let textLimitValueLabel = NSTextField(labelWithString: "")
+    private let historyLimitStepper = NSStepper()
+    private let historyLimitValueLabel = NSTextField(labelWithString: "")
     private let storageBytesLabel = NSTextField(labelWithString: "")
     private let storageCountsLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
@@ -578,7 +576,7 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         return [global, actions, restoreRow]
     }
 
-    /// Value label + stepper, the control shape of the two limit rows.
+    /// Value label + stepper, the control shape of the limit row.
     private func limitControl(stepper: NSStepper, value: NSTextField,
                               range: ClosedRange<Int>, step: Int, action: Selector) -> NSView {
         stepper.minValue = Double(range.lowerBound)
@@ -610,18 +608,13 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         storageStack.spacing = 2
         return card(rows: [
             row(label: "保存图片历史到磁盘缓存",
-                footnote: "张数按下方「图片保留数量」，另有 7 天 / 50 MB 上限，缓存目录权限 0700。关闭后立即删除缓存；不开启时内存里只保留 128 px 缩略图与识别文本。",
+                footnote: "图片原图另有 7 天 / 50 MB 上限，缓存目录权限 0700。关闭后立即删除缓存；不开启时内存里只保留 128 px 缩略图与识别文本。",
                 control: persistenceSwitch),
-            row(label: "图片保留数量",
-                footnote: "内存历史与磁盘缓存共用这个上限，超出的从最旧开始淘汰。调小后立即裁剪。",
-                control: limitControl(stepper: imageLimitStepper, value: imageLimitValueLabel,
-                                      range: ClipboardLimits.imageRange, step: 5,
-                                      action: #selector(imageLimitChanged))),
-            row(label: "文本保留数量",
-                footnote: "调小后立即裁剪最旧的文本记录。",
-                control: limitControl(stepper: textLimitStepper, value: textLimitValueLabel,
-                                      range: ClipboardLimits.textRange, step: 10,
-                                      action: #selector(textLimitChanged))),
+            row(label: "历史保留数量",
+                footnote: "图片与文本合计，超出的从最旧开始淘汰。调小后立即裁剪。",
+                control: limitControl(stepper: historyLimitStepper, value: historyLimitValueLabel,
+                                      range: ClipboardLimits.range, step: 10,
+                                      action: #selector(historyLimitChanged))),
             row(label: "存储占用",
                 footnote: "磁盘缓存目录的实际大小（含历史索引）。未开启磁盘缓存时不占磁盘，历史只在内存里。",
                 control: storageStack),
@@ -759,10 +752,8 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         autoDownloadSwitch.state = settings.autoDownloadUpdates ? .on : .off
         autoDownloadSwitch.isEnabled = settings.autoCheckUpdates
         persistenceSwitch.state = settings.imagePersistenceEnabled ? .on : .off
-        imageLimitStepper.intValue = Int32(settings.clipboardImageLimit)
-        textLimitStepper.intValue = Int32(settings.clipboardTextLimit)
-        imageLimitValueLabel.stringValue = "\(settings.clipboardImageLimit) 张"
-        textLimitValueLabel.stringValue = "\(settings.clipboardTextLimit) 条"
+        historyLimitStepper.intValue = Int32(settings.clipboardHistoryLimit)
+        historyLimitValueLabel.stringValue = "\(settings.clipboardHistoryLimit) 条"
         refreshStorage()
     }
 
@@ -813,17 +804,10 @@ final class SettingsPanel: NSWindowController, NSWindowDelegate {
         applyUpdatedSettings(updated, message: "")
     }
 
-    @objc private func imageLimitChanged() {
+    @objc private func historyLimitChanged() {
         stopRecording()
         var updated = settings
-        updated.clipboardImageLimit = ClipboardLimits.clampedImages(Int(imageLimitStepper.intValue))
-        applyUpdatedSettings(updated, message: "")
-    }
-
-    @objc private func textLimitChanged() {
-        stopRecording()
-        var updated = settings
-        updated.clipboardTextLimit = ClipboardLimits.clampedTexts(Int(textLimitStepper.intValue))
+        updated.clipboardHistoryLimit = ClipboardLimits.clamped(Int(historyLimitStepper.intValue))
         applyUpdatedSettings(updated, message: "")
     }
 
