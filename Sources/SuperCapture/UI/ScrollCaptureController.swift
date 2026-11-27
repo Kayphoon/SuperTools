@@ -111,6 +111,7 @@ final class ScrollCaptureController {
     }
 
     func start() {
+        Diagnostics.log("scroll: start selection=\(selection) display=\(displayFrame)")
         buildPanels()
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -138,12 +139,14 @@ final class ScrollCaptureController {
     func finish() {
         guard !closed else { return }
         let image = canvasImage
+        Diagnostics.log("scroll: finish canvasHeight=\(image?.height ?? -1)")
         invalidate()
         if let image { onFinish?(image) } else { onCancel?() }
     }
 
     func cancel() {
         guard !closed else { return }
+        Diagnostics.log("scroll: cancel canvasHeight=\(canvasImage?.height ?? -1)")
         invalidate()
         onCancel?()
     }
@@ -283,7 +286,10 @@ final class ScrollCaptureController {
                 accept(crop)
             } catch {
                 consecutiveFailures += 1
-                if consecutiveFailures > 12 { cancel() }
+                if consecutiveFailures > 12 {
+                    Diagnostics.log("scroll: capture failed \(consecutiveFailures) times in a row, cancelling")
+                    cancel()
+                }
             }
         }
     }
@@ -305,13 +311,17 @@ final class ScrollCaptureController {
             canvasTop = 0
             lastFrameTop = 0
             self.lastGray = gray
+            Diagnostics.log("scroll: first frame \(frame.width)x\(frame.height)")
             updateFeedback()
             return
         }
         guard frame.width == frameWidth, frame.height == frameHeight else { return }
-        if ScrollStitcher.meanAbsoluteDifference(lastGray, gray) < 1.2 { return }
-        guard let dy = ScrollStitcher.verticalOffset(previous: lastGray, current: gray) else {
+        let stillness = ScrollStitcher.meanAbsoluteDifference(lastGray, gray)
+        if stillness < 1.2 { return }
+        let match = ScrollStitcher.match(previous: lastGray, current: gray)
+        guard let dy = match.dy else {
             // The page moved but no overlap matched — a slice may be missing.
+            Diagnostics.log("scroll: no match stillness=\(Self.fmt(stillness)) best=\(Self.fmt(match.bestScore)) second=\(Self.fmt(match.runnerUpScore)) canvasHeight=\(canvasImage?.height ?? 0)")
             borderView?.showWarning()
             return
         }
@@ -353,7 +363,12 @@ final class ScrollCaptureController {
         canvasTop = newCanvasTop
         lastFrameTop = newTop
         self.lastGray = gray
+        Diagnostics.log("scroll: stitched dy=\(dy) best=\(Self.fmt(match.bestScore)) second=\(Self.fmt(match.runnerUpScore)) canvasHeight=\(merged.height)")
         updateFeedback()
+    }
+
+    private static func fmt(_ value: Double) -> String {
+        value.isFinite ? String(format: "%.2f", value) : "inf"
     }
 
     /// Everything the user can see about capture progress lives here: the
